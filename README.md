@@ -59,6 +59,8 @@ engine/paint/     display list و ترکیب روی canvas
 engine/raster/    هدف RGBA، blend، primitives
 text/             پل به vtext و glyph cache
 loader/           file:// و http:// → Resource (۲۷ تست)
+tools/boxes.v     چاپ box tree و display list برای یک صفحه
+examples/persian/ یک صفحهٔ فارسی
 shell/            پنجره، ورودی، chrome
 cmd/vweb/         نقطهٔ ورود
 ```
@@ -132,3 +134,15 @@ import نسبت به پوشهٔ `v.mod` نقطه‌جدا می‌شود. این 
 
 `notes/` برای چیزهایی است که **اندازه‌گیری شده‌اند**. نسخهٔ واقعی از یک
 تصمیم، عددی است که آمده و نتیجه‌اش، نه استدلالی که بعداً سرهم شده.
+
+## اجرا
+
+```sh
+v run tools/boxes.v page.html --list     # چه جعبه‌هایی ساخته شد و چه چیزی کشیده می‌شود
+v run examples/persian out.png           # یک صفحهٔ راست‌به‌چپ
+v run cmd/vweb page.html out.png --width 640
+```
+
+`tools/boxes.v` مهم‌ترین ابزار این پروژه است: «صفحه بد به نظر می‌رسد» تشخیص نیست.
+هر باگ رندر با «چه جعبه‌هایی ساخته شد» شروع می‌شود، و نوشتن یک برنامهٔ موقت برای
+همین یک پرسش، شش نسخهٔ تقریباً یکسان در یک جلسه ساخت.
