@@ -49,7 +49,7 @@
 ## ساختار
 
 ```
-engine/html/       یک نازک‌کننده روی vlib/net.html — نه پارسر موازی
+engine/document/    یک نازک‌کننده روی vlib/net.html — نه پارسر موازی
 engine/tree/       predicate و ناوبری روی html.Tag (درختی ندارد)
 engine/css/        tokenizer، parser، CSSOM و UA stylesheet
 engine/selector/   گرامر selector، specificity و تطبیق
