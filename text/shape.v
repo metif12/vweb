@@ -272,6 +272,17 @@ fn (r WrapRequest) spacing_of(w vtext.WrappedLine) f64 {
 }
 
 // bitmap_for returns a glyph's rasterization, from the cache when it is there.
+//
+// Known bug, measured 2026-10-04 and not fixed: this returns an empty bitmap for many
+// glyphs, and an empty bitmap draws nothing. Ten `i` glyphs in a row at 16 pixels give
+// six; the body text of an ordinary page loses 70 of 125. The failures track glyph
+// *width*, not size or weight -- a narrow stem has the most to lose from wherever the
+// rounding happens.
+//
+// Retrying at a whole-pixel offset was tried and changed nothing (still 4, 5, 4 and 6 for
+// the four cases measured), so the subpixel offset is not the cause and the comment that
+// claimed it was removed rather than kept. An empty bitmap is not cached, so a glyph
+// that fails is re-rasterized on every call.
 pub fn (mut lib FontLibrary) bitmap_for(f &vtext.Font, k GlyphKey) vtext.GlyphBitmap {
 	if cached := lib.cache.get(k) {
 		return cached

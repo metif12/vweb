@@ -716,3 +716,133 @@ fn test_some_named_candidates_are_absent_and_that_is_fine() {
 	assert lib.find_face('cambria.ttf') == ''
 	assert lib.find_face(serif_faces[0]) != ''
 }
+// --- every shaped glyph must be drawable --------------------------------------
+
+// A glyph whose font the library cannot resolve is skipped by `place_glyphs`, and a
+// skipped glyph is a hole in the page: the text reads "Block layout and pai" because
+// the last two characters went missing and nothing said so.
+//
+// The count is asserted rather than a boolean so that a failure says how many glyphs
+// went missing, which is the difference between "one face is unregistered" and "most
+// of this run never had a font".
+
+fn test_every_glyph_of_a_shaped_run_has_a_registered_font() {
+	mut lib := new_font_library()
+	mut style := FontStyle{ family: 'sans-serif', size: 16.0 }
+	run := lib.shape('Block layout and paint', &style, 0.0, 20.0)
+	assert run.len > 0
+	mut missing := 0
+	for g in run {
+		if g.font_id < 0 {
+			missing++
+		}
+	}
+	assert missing == 0
+}
+
+fn test_every_glyph_of_a_bold_run_has_a_registered_font() {
+	// Bold resolves to a different face, and a face resolved through the candidate
+	// list is the one most likely to be missing from the path map.
+	mut lib := new_font_library()
+	mut style := FontStyle{ family: 'sans-serif', size: 32.0, weight: 700 }
+	run := lib.shape('Block layout and paint', &style, 0.0, 40.0)
+	assert run.len > 0
+	mut missing := 0
+	for g in run {
+		if g.font_id < 0 {
+			missing++
+		}
+	}
+	assert missing == 0
+}
+
+fn test_every_glyph_of_a_wrapped_run_has_a_registered_font() {
+	// The path layout actually uses. Wrapping shapes through the font set rather than
+	// through one face, so it is a different route to the same place.
+	mut lib := new_font_library()
+	mut style := FontStyle{ family: 'sans-serif', size: 16.0 }
+	lines := lib.wrap(WrapRequest{
+		content:        'A paragraph with enough words in it that it has to be broken'
+		style:          &style
+		max_width:      120.0
+		origin_x:       0.0
+		first_baseline: 20.0
+		line_height:    20.0
+	})
+	assert lines.len > 1
+	mut missing := 0
+	mut total := 0
+	for line in lines {
+		for g in line.glyphs {
+			total++
+			if g.font_id < 0 {
+				missing++
+			}
+		}
+	}
+	assert total > 0
+	assert missing == 0
+}
+
+fn test_every_glyph_of_a_persian_run_has_a_registered_font() {
+	// Persian shapes against the Arabic chain, which is a second set of faces entirely.
+	// A page in Persian is why this project exists, so this is the one that matters most.
+	mut lib := new_font_library()
+	mut style := FontStyle{ family: 'sans-serif', size: 24.0 }
+	run := lib.shape('سلام دنیا', &style, 0.0, 30.0)
+	assert run.len > 0
+	mut missing := 0
+	for g in run {
+		if g.font_id < 0 {
+			missing++
+		}
+	}
+	assert missing == 0
+}
+fn test_shaping_a_bold_run_first_does_not_break_later_runs() {
+	// The page shapes its heading before its body text, and the heading is the only
+	// bold thing on it. If the first run leaves the library in a state where later runs
+	// cannot resolve their fonts, this is where it shows -- and it is the difference
+	// between "shaping is broken" and "shaping is broken after something else ran
+	// first", which are very different bugs.
+	mut lib := new_font_library()
+	mut bold := FontStyle{ family: 'sans-serif', size: 32.0, weight: 700 }
+	mut regular := FontStyle{ family: 'sans-serif', size: 16.0 }
+	_ = lib.shape('Block layout and paint', &bold, 0.0, 40.0)
+
+	mut missing_after_bold := 0
+	for text in ['A paragraph with enough words in it that it has to be broken across',
+		'A bordered box with a background.', 'A box with a thick left border.',
+		'Second paragraph.'] {
+		for g in lib.shape(text, &regular, 0.0, 20.0) {
+			if g.font_id < 0 {
+				missing_after_bold++
+			}
+		}
+	}
+	assert missing_after_bold == 0
+}
+
+fn test_wrapping_after_a_bold_run_keeps_every_glyph() {
+	mut lib := new_font_library()
+	mut bold := FontStyle{ family: 'sans-serif', size: 32.0, weight: 700 }
+	mut regular := FontStyle{ family: 'sans-serif', size: 16.0 }
+	_ = lib.shape('Block layout and paint', &bold, 0.0, 40.0)
+	lines := lib.wrap(WrapRequest{
+		content:        'A bordered box with a background.'
+		style:          &regular
+		max_width:      400.0
+		origin_x:       0.0
+		first_baseline: 20.0
+		line_height:    20.0
+	})
+	mut missing := 0
+	for line in lines {
+		for g in line.glyphs {
+			if g.font_id < 0 {
+				missing++
+			}
+		}
+	}
+	assert missing == 0
+}
