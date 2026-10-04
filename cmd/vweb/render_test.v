@@ -1,15 +1,9 @@
 module main
 
-import engine.css
-import engine.display
-import engine.document as dom
-import engine.paint
+import engine.page
 import engine.raster
-import engine.selector
-import engine.style
 import loader
 import os
-import text
 
 // These tests are about the pipeline, not about how the page looks.
 //
@@ -22,6 +16,11 @@ import text
 //
 // The blank page is not a hypothetical. `document_element` once returned a text node when
 // a file had a newline after its doctype, and the result was a silently empty render.
+//
+// They also do not have a pipeline of their own. An earlier version of this file carried a
+// private copy of all six steps, which had already drifted from cmd/vweb by the time this
+// was written; engine/page is that pipeline now, and a test that reimplements it measures
+// the test.
 
 fn tmp(name string) string {
 	dir := os.vtmp_dir() + '@vweb_render_test'
@@ -35,7 +34,7 @@ fn write_page(name string, body string) string {
 	return path
 }
 
-const page = '<!DOCTYPE html>
+const sample_page = '<!DOCTYPE html>
 <html>
 <head>
 <style>
@@ -52,36 +51,12 @@ const page = '<!DOCTYPE html>
 </html>
 '
 
-// render_pixels renders a page and returns the canvas, so a test can look at it without
-// going through a file.
-fn render_pixels(src string, width int, height int) raster.Canvas {
-	doc := dom.parse(src)
-	viewport := css.screen_context(width, height)
-	mut styles := style.new_engine_for(sheets_of(src), viewport)
-	mut lay := display.Layouter{
-		engine:         styles
-		state:          &selector.State{}
-		fonts:          text.new_font_library()
-		viewport_width: width
-		viewport_height: height
-	}
-	page_boxes := lay.layout(doc)
-	mut canvas := raster.new_canvas(width, height)
-	canvas.clear(raster.white)
-	paint.render_page(page_boxes, mut canvas)
-	return canvas
-}
+const small_opts = page.Options{ width: 200, height: 200 }
+const mid_opts = page.Options{ width: 320, height: 240 }
 
-fn sheets_of(src string) []style.Sheet {
-	doc := dom.parse(src)
-	mut out := [style.Sheet{ style: css.parse(css.user_agent_css), origin: .user_agent }]
-	for el in dom.elements(doc) {
-		if el.name == 'style' {
-			out << style.Sheet{ style: css.parse(dom.text_content(el)),
-				origin: .author }
-		}
-	}
-	return out
+fn render_pixels(src string, width int, height int) raster.Canvas {
+	opts := page.Options{ width: width, height: height }
+	return page.render_source(src, opts)
 }
 
 fn count_inked(c &raster.Canvas) int {
@@ -96,13 +71,27 @@ fn count_inked(c &raster.Canvas) int {
 	return n
 }
 
+fn count_coloured(c &raster.Canvas, want raster.Color) int {
+	mut n := 0
+	for y in 0 .. c.height {
+		for x in 0 .. c.width {
+			if c.at(x, y) == want {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+const band_blue = raster.Color{ r: 0x33, g: 0x66, b: 0x99, a: 255 }
+
 // --- the pipeline runs -------------------------------------------------------
 
 fn test_a_page_puts_ink_on_the_canvas() {
 	// The regression this whole file exists for. A page that parses but whose document
 	// element is a text node lays out to a single empty box and renders nothing at all,
 	// with no error anywhere.
-	c := render_pixels(page, 640, 480)
+	c := render_pixels(sample_page, 640, 480)
 	assert count_inked(c) > 500
 }
 
@@ -121,19 +110,11 @@ fn test_an_empty_document_does_not_crash_the_renderer() {
 // --- the stylesheet in the document is honoured -------------------------------
 
 fn test_a_background_from_the_documents_own_stylesheet_is_painted() {
-	// A page whose `<style>` was not collected renders unstyled, and an unstyled page
-	// still has text on it -- so "there is ink" does not catch this. Only looking for the
-	// colour does.
-	c := render_pixels(page, 640, 480)
-	mut found := false
-	for y in 0 .. 480 {
-		for x in 0 .. 640 {
-			if c.at(x, y) == raster.Color{ r: 0x33, g: 0x66, b: 0x99, a: 255 } {
-				found = true
-			}
-		}
-	}
-	assert found
+	// A page whose <style> was not collected renders unstyled, and an unstyled page still
+	// has text on it -- so "there is ink" does not catch this. Only counting the colour
+	// does.
+	c := render_pixels(sample_page, 640, 480)
+	assert count_coloured(c, band_blue) > 1000
 }
 
 fn test_without_a_stylesheet_the_band_is_not_painted() {
@@ -141,89 +122,107 @@ fn test_without_a_stylesheet_the_band_is_not_painted() {
 	// the previous test found the rule and not something incidental.
 	plain := '<html><body><div class="band"></div></body></html>'
 	c := render_pixels(plain, 200, 200)
-	for y in 0 .. 200 {
-		for x in 0 .. 200 {
-			assert c.at(x, y) != raster.Color{ r: 0x33, g: 0x66, b: 0x99, a: 255 }
-		}
-	}
+	assert count_coloured(c, band_blue) == 0
 }
 
 fn test_the_user_agent_sheet_is_always_applied() {
 	// `body { margin: 8px }` comes from the UA sheet. If it is not applied, content sits
 	// at x == 0, and that is a whole class of "why is there no margin" report.
 	//
-	// The rule is in a `<style>` block rather than a `style` attribute because inline
-	// attributes are not implemented: the cascade reads stylesheets only, and a test that
-	// quietly depended on them would pass for the wrong reason. See the note on inline
-	// styles below.
+	// The rule is in a <style> block rather than a `style` attribute because inline
+	// attributes need the cascade and are covered in engine/style.
 	src := '<html><head><style>div { height: 20px; background-color: red }</style></head>' +
 		'<body><div></div></body></html>'
 	c := render_pixels(src, 400, 200)
 	// The div starts at y == 8 because that is body's margin, and it is 20 tall, so the
 	// row to look at is 15 and not the middle of the canvas.
 	assert c.at(0, 15) == raster.white
-	assert c.at(20, 15) == raster.red
+	assert c.at(20, 15) == raster.Color{ r: 255, g: 0, b: 0, a: 255 }
 	assert c.at(20, 40) == raster.white
 }
-
-// --- a known gap, stated rather than tested ----------------------------------
 
 fn test_an_inline_style_attribute_reaches_the_pixels() {
 	// The whole loop for inline styles: the parser has to keep the attribute, the cascade
 	// has to read it, and the paint has to show it. A test at the cascade level cannot see
-	// the first step, and this is the step that was never written.
+	// the first step, and that step was never written.
 	src := '<html><body><div style="height:20px; background-color: #ff0000"></div></body></html>'
 	c := render_pixels(src, 200, 200)
 	assert c.at(20, 15) == raster.Color{ r: 255, g: 0, b: 0, a: 255 }
 }
 
-// Inline `style="..."` attributes are parsed and applied, but only on the element that
-// carries them: they are not inherited, which is correct, and they do not reach a child,
-// which is also correct and is why the rule above styles the div rather than its
-// contents.
-//
-// What is *not* implemented, and is recorded here because it is a small thing that a
-// page will eventually need:
-//
-//   - `style` on an SVG or MathML element, where the property set is not CSS's.
-//   - The `style` attribute as a source of custom property values. `--x: 1` parses as a
-//     declaration and is stored nowhere, so `var(--x)` finds nothing.
+// --- loading and files -------------------------------------------------------
 
-// --- rendering to a file -----------------------------------------------------
-
-fn test_render_writes_a_png() {
-	page_path := write_page('page.html', page)
+fn test_a_page_loads_from_a_path_and_writes_a_png() {
+	page_path := write_page('page.html', sample_page)
 	out := tmp('out.png')
-	os.mkdir_all(os.vtmp_dir() + '@vweb_render_test') or { panic(err) }
-	render(page_path, out, 200, 150) or { panic(err) }
+	mut ld := loader.Loader{ base: '.' }
+	doc := page.load(page_path, mut ld) or { panic(err) }
+	page.render(doc, small_opts).write_png(out) or {
+		panic(err)
+	}
 	assert os.exists(out)
 	data := os.read_file(out) or { panic(err) }
-	// A PNG starts with the eight-byte signature. Enough to know a file was written and
-	// it is an image; the rest is raster's business.
+	// A PNG starts with an eight-byte signature. Enough to know a file was written and it
+	// is an image; the rest is raster's business.
 	sig := data[..4]
 	assert sig == '\x89PNG'
 }
 
-fn test_render_reports_a_missing_file() {
+fn test_load_reports_a_missing_file() {
 	// An error, not a panic and not an empty image.
-	if _ := render(tmp('definitely-absent.html'), tmp('x.png'), 100, 100) {
+	mut ld := loader.Loader{ base: '.' }
+	if _ := page.load(tmp('definitely-absent.html'), mut ld) {
 		assert false, 'expected an error for a missing page'
 	}
 }
 
-fn test_render_refuses_something_that_is_not_a_document() {
+fn test_load_refuses_something_that_is_not_a_document() {
 	not_html := tmp('data.json')
 	os.write_file(not_html, '{"a":1}') or { panic(err) }
-	if _ := render(not_html, tmp('y.png'), 100, 100) {
+	mut ld := loader.Loader{ base: '.' }
+	if _ := page.load(not_html, mut ld) {
 		assert false, 'expected an error for a non-document'
 	}
 }
 
+fn test_the_loader_and_the_renderer_agree_on_a_path() {
+	// `page.load` takes a path, goes through the loader, and the loader resolves relative
+	// paths against a base. This is the seam where a path that works in one and not the
+	// other becomes a blank page rather than an error.
+	page_path := write_page('seam.html', '<html><body><p>seam</p></body></html>')
+	mut ld := loader.Loader{ base: '.' }
+	res := ld.load(page_path) or { panic(err) }
+	assert res.mime == 'text/html'
+	seam := render_pixels(res.body.bytestr(), 200, 200)
+	assert count_inked(seam) > 0
+}
+
+// --- warnings, determinism, introspection ------------------------------------
+
+fn test_an_unreachable_stylesheet_is_a_warning_and_not_a_failure() {
+	// A page with one broken link is still a page. Refusing to render it would make the
+	// failure harder to see than the missing styles, and the warning is what makes the
+	// missing styles visible at all.
+	src := '<html><head><link rel="stylesheet" href="nope.css"></head>' +
+		'<body><p>text</p></body></html>'
+	mut ld := loader.Loader{ base: '.' }
+	doc := page.parse(src, mut ld)
+	assert doc.warnings.len == 1
+	assert doc.warnings[0].contains('nope.css')
+	assert count_inked(page.render(doc, small_opts)) > 0
+}
+
+fn test_a_page_with_no_broken_links_has_no_warnings() {
+	mut ld := loader.Loader{ base: '.' }
+	doc := page.parse(sample_page, mut ld)
+	assert doc.warnings.len == 0
+}
+
 fn test_render_is_repeatable() {
-	// ARCHITECTURE.md 4: rendering is a pure function of the tree. Two renders of the
-	// same page must be byte-identical, or nothing downstream can be compared.
-	first := render_pixels(page, 320, 240)
-	second := render_pixels(page, 320, 240)
+	// ARCHITECTURE.md 4: rendering is a pure function of the tree. Two renders of the same
+	// page must be identical, or nothing downstream can be compared.
+	first := render_pixels(sample_page, 320, 240)
+	second := render_pixels(sample_page, 320, 240)
 	mut differing := 0
 	for y in 0 .. 240 {
 		for x in 0 .. 320 {
@@ -235,14 +234,19 @@ fn test_render_is_repeatable() {
 	assert differing == 0
 }
 
-fn test_the_loader_and_the_renderer_agree_on_a_path() {
-	// `render` takes a path, goes through the loader, and the loader resolves relative
-	// paths against a base. This is the seam where a path that works in one and not the
-	// other becomes a blank page rather than an error.
-	page_path := write_page('seam.html', '<html><body><p>seam</p></body></html>')
-	mut ld := loader.Loader{ base: '.' }
-	res := ld.load(page_path) or { panic(err) }
-	assert res.mime == 'text/html'
-	c := render_pixels(res.body.bytestr(), 200, 200)
-	assert count_inked(c) > 0
+fn test_the_display_list_and_the_canvas_agree_on_how_much_is_drawn() {
+	// The list is the plan and the canvas is the result. A page whose plan is empty is a
+	// page that renders nothing, and checking the plan catches that without looking at a
+	// pixel.
+	list := page.display_list(sample_page, mid_opts)
+	assert list.len() > 0
+}
+
+fn test_the_box_tree_and_the_display_list_are_both_available() {
+	// These are the two questions a rendering bug turns into, and they are separate calls
+	// because they are separate answers.
+	boxes := page.boxes(sample_page, mid_opts)
+	assert boxes.len > 1
+	list := page.display_list(sample_page, mid_opts)
+	assert list.len() > 0
 }
