@@ -1,0 +1,21 @@
+# Build output
+*.exe
+*.exe~
+*.obj
+*.o
+*.pdb
+*.ilk
+*.pch
+*.manifest
+
+# Generated images. A golden test writes one only when it fails, so committing
+# one would mean committing a failure. The expected images in testdata/golden/
+# are committed on purpose; these are the accidental ones.
+*.actual.png
+*.actual.raw
+bin/
+
+# V tool state
+.vmodules/
+modules/
+.v/

@@ -1,0 +1,14 @@
+# Line endings are normalised in the repository and checked out as LF on every
+# platform.
+#
+# Without this, git's `core.autocrlf` decides per machine: the same commit produces
+# CRLF working files on Windows and LF on Linux, and every diff between two Windows
+# checkouts shows every line changed. One file here had CRLF while the other 31 had
+# LF, which is exactly the state this file exists to prevent.
+* text=auto eol=lf
+
+# Golden images and raw pixel buffers are binary. Without this a checkout on a
+# platform that treats them as text can corrupt them, and a corrupted golden file
+# makes the golden test fail with a diff nobody can read.
+*.png binary
+*.raw binary

@@ -1,0 +1,544 @@
+module display
+
+import engine.css
+import engine.raster
+import engine.selector
+import engine.style
+import net.html
+import text
+
+// The tests build trees by hand for the reason written in
+// engine/selector/match_test.v: a tree from another repository turns that
+// repository's bug into this module's failing test.
+//
+// Every stylesheet below sets `line-height: 20px` on everything. Line height
+// otherwise comes from whichever face the machine has, and a layout test that
+// asserted absolute pixel positions would then be a test of the font on this host
+// rather than of the layout. With an explicit line height, every vertical number
+// here is exact, and the font only shows up in the golden test -- which is where
+// PHASES.md says it belongs.
+
+const line = 'line-height: 20px; '
+// The UA sheet is in every test, because a browser has it and a div is a block only
+// because of it: without it every div here is inline and every box but the root's
+// disappears. ody { margin: 0 } then takes the default 8px back out, so the pixel
+// arithmetic below reads as "800 minus what this test spent" instead of as 792 minus
+// something. The two tests that care about the default margin use the sheet on its own.
+const reset = 'body { margin: 0 } * { '
+
+fn el(name string, id string, class string) &html.Tag {
+	// The maps are created explicitly: a nil map is a read of nothing, and writing an
+	// id into one is how a test helper ends up being the crash.
+	mut node := &html.Tag{ name: name, attributes: map[string]string{} }
+	if id != '' {
+		node.attributes['id'] = id
+	}
+	if class != '' {
+		node.class_set.add(class)
+	}
+	node.parent = &html.Tag{ name: 'body' }
+	return node
+}
+
+fn text_el(content string) &html.Tag {
+	return &html.Tag{ name: 'text', content: content }
+}
+
+// attach makes parent the parent of each child, both ways round. It takes mut on
+// the pointer because V 0.5.2 only writes through a pointer parameter declared that
+// way: mut p := parent silently copies the Tag and the tree stays empty, which
+// shows up much later as a nil box rather than as a missing child.
+// attach makes parent the parent of each child, both ways round.
+//
+// V 0.5.2 will not let a loop variable over an immutable slice be written through
+// ("child.parent aliases mutable data from an immutable value"), and it rejects
+// `mut` on a variadic parameter outright. So the children are copied into a local
+// array first: that array is mutable, and the links can be set through it.
+//
+// The parent parameter is `mut` for a second reason. `mut p := parent` looks like it
+// aliases and does not: it copies the Tag, the children land on the copy, and the
+// tree stays empty -- which surfaces much later as a nil box rather than as a
+// missing child.
+fn attach(mut parent &html.Tag, children ...&html.Tag) {
+	mut kids := []&html.Tag{}
+	for child in children {
+		kids << child
+	}
+	mut i := 0
+	for i < kids.len {
+		mut child := kids[i]
+		parent.children << child
+		child.parent = parent
+		i++
+	}
+}
+
+fn layouter(src string, width int) &Layouter {
+	return &Layouter{
+		engine:          style.new_engine([style.Sheet{
+			style:  css.parse(css.user_agent_css + reset + line + ' } ' + src)
+			origin: style.Origin.author
+		}])
+		state:           &selector.State{}
+		fonts:           text.new_font_library()
+		viewport_width:  width
+		viewport_height: 800
+	}
+}
+
+fn box_for(root &Box, id string) &Box {
+	for b in boxes(root) {
+		if b.element != unsafe { nil } && b.element.attributes['id'] == id {
+			return b
+		}
+	}
+	return unsafe { nil }
+}
+
+// --- width ------------------------------------------------------------------
+
+fn test_the_root_fills_the_viewport() {
+	mut root := el('html', '', '')
+	l := layouter('', 800)
+	b := l.layout(root)
+	assert b.rect.width == 800
+	assert b.rect.x == 0
+	assert b.rect.y == 0
+}
+
+fn test_a_block_child_fills_its_parent() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.rect.width == 800
+	assert d.rect.x == 0
+}
+
+fn test_width_subtracts_margin_border_and_padding() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { margin: 10px; border-width: 2px; border-style: solid; padding: 5px }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	// The margin takes 10px off each side of the *border box*, and the border and
+	// padding then come out of what is left for the content.
+	assert d.rect.width == 800 - 2 * 10
+	assert d.rect.x == 0
+	assert d.content.x == 10 + 2 + 5
+	assert d.content.width == 800 - 2 * (10 + 2 + 5)
+}
+
+fn test_an_explicit_width_overrides_auto() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { width: 300px }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.rect.width == 300
+	assert d.content.width == 300
+	// The box is as wide as it asked to be and sits at the left, which is where LTR
+	// puts it; the leftover space is not distributed.
+	assert d.rect.x == 0
+}
+
+fn test_a_percentage_width_is_of_the_containing_block() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { width: 50% }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.rect.width == 400
+}
+
+fn test_a_percentage_is_of_the_content_box_not_the_border_box() {
+	// `width: 100%` on a padded box means "as wide as the parent's content", so the
+	// padding pushes it over the parent's edge. That is what CSS says and it is the
+	// opposite of what the shorthand suggests.
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { padding: 10px; width: 100% }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.content.width == 800
+	assert d.rect.width == 820
+}
+
+fn test_a_width_wider_than_the_page_overflows_it() {
+	// CSS 2.1 10.4: only `auto` is limited to what is left. An explicit width is
+	// taken at its word, and what happens to the overflow is Phase 3's business.
+	// Clamping here instead would make this page silently narrower than it asks to
+	// be, which is worse than visibly too wide.
+	mut body := el('body', '', '')
+	div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { width: 5000px }', 800)
+	b := l.layout(body)
+	assert box_for(b, 'd').rect.width == 5000
+}
+
+// --- height -----------------------------------------------------------------
+
+fn test_height_is_the_content_height() {
+	mut body := el('body', '', '')
+	one := el('div', 'a', '')
+	two := el('div', 'b', '')
+	attach(mut body, one, two)
+	l := layouter('', 800)
+	b := l.layout(body)
+	assert box_for(b, 'a').rect.height == 20
+	assert box_for(b, 'b').rect.height == 20
+	// Two twenty-pixel lines plus nothing else.
+	assert b.rect.height == 40
+}
+
+fn test_an_empty_block_is_still_one_line_tall() {
+	// A page of empty divs collapsing to nothing makes a percentage height on a
+	// parent a percentage of zero.
+	mut body := el('body', '', '')
+	attach(mut body, el('div', 'a', ''))
+	l := layouter('', 800)
+	b := l.layout(body)
+	assert box_for(b, 'a').rect.height == 20
+}
+
+fn test_an_explicit_height_overrides_the_content() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { height: 200px }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.rect.height == 200
+	// The content is not clipped, so it can be taller than the box.
+	assert d.content.height == 20
+}
+
+fn test_border_and_padding_add_to_the_height() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { border-width: 3px; border-style: solid; padding: 7px }', 800)
+	b := l.layout(body)
+	assert box_for(b, 'd').rect.height == 20 + 2 * (3 + 7)
+}
+
+// --- used border width ------------------------------------------------------
+
+fn test_a_border_width_with_no_style_reserves_nothing() {
+	// CSS 2.1 10.3.3: the used width of a `none` border is zero. `border-width` alone
+	// is the single most common way to write a border that does not appear, and a
+	// layout that honoured the width anyway would put six pixels of empty space around
+	// every such box.
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { border-width: 3px }', 800)
+	d := box_for(l.layout(body), 'd')
+	assert d.border_px == [0, 0, 0, 0]
+	assert d.content.width == 800
+}
+
+fn test_a_hidden_border_also_reserves_nothing() {
+	// `hidden` differs from `none` only in what happens when a table collapses
+	// borders, which Phase 1 has no tables. It still has to zero the width, or the two
+	// keywords would lay out differently for no reason a page could see.
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { border-width: 3px; border-style: hidden }', 800)
+	assert box_for(l.layout(body), 'd').border_px == [0, 0, 0, 0]
+}
+
+fn test_only_the_styled_side_is_kept() {
+	// Order matters and this is the point of the test: the shorthand comes first and
+	// the per-side longhand overrides it. Reversed, the shorthand would win the top
+	// side too and every side would be zero -- which is what the assertion has to be
+	// able to tell apart from this.
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { border-width: 3px; border-style: none; border-top-style: solid }',
+		800)
+	assert box_for(l.layout(body), 'd').border_px == [3, 0, 0, 0]
+}
+
+fn test_a_per_side_longhand_alone_leaves_the_others_alone() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	l := layouter('div { border-width: 3px; border-bottom-style: solid }', 800)
+	assert box_for(l.layout(body), 'd').border_px == [0, 0, 3, 0]
+}
+
+// --- margin collapsing ------------------------------------------------------
+
+fn test_adjacent_margins_collapse_to_the_larger() {
+	// This is the whole reason `p { margin: 1em 0 }` looks right. Without collapsing
+	// the gap would be twice as large.
+	mut body := el('body', '', '')
+	a := el('div', 'a', '')
+	b2 := el('div', 'b', '')
+	attach(mut body, a, b2)
+	l := layouter('div { margin: 10px 0 }', 800)
+	b := l.layout(body)
+	ba := box_for(b, 'a')
+	bb := box_for(b, 'b')
+	assert bb.rect.y - (ba.rect.y + ba.rect.height) == 10
+}
+
+fn test_collapsing_takes_the_larger_not_the_sum() {
+	mut body := el('body', '', '')
+	a := el('div', 'a', '')
+	b2 := el('div', 'b', '')
+	attach(mut body, a, b2)
+	l := layouter('#a { margin-bottom: 4px } #b { margin-top: 30px }', 800)
+	b := l.layout(body)
+	ba := box_for(b, 'a')
+	bb := box_for(b, 'b')
+	assert bb.rect.y - (ba.rect.y + ba.rect.height) == 30
+}
+
+fn test_a_zero_margin_neither_adds_nor_subtracts() {
+	mut body := el('body', '', '')
+	a := el('div', 'a', '')
+	b2 := el('div', 'b', '')
+	attach(mut body, a, b2)
+	l := layouter('#a { margin-bottom: 0 } #b { margin-top: 0 }', 800)
+	b := l.layout(body)
+	ba := box_for(b, 'a')
+	bb := box_for(b, 'b')
+	assert bb.rect.y - (ba.rect.y + ba.rect.height) == 0
+}
+
+fn test_a_border_stops_the_top_margin_from_escaping() {
+	// With a border on the parent, the child's margin pushes the child down inside it
+	// instead of moving the parent down. This is the difference you can see when the
+	// parent has a background.
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	child := el('div', 'c', '')
+	attach(mut div, child)
+	attach(mut body, div)
+	l := layouter('#d { border-width: 1px; border-style: solid; margin-top: 40px } #c { margin-top: 10px }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	c := box_for(b, 'c')
+	// The child's top margin sits inside the parent's border box.
+	assert c.rect.y - d.rect.y == 1 + 10
+}
+
+fn test_nested_blocks_stack() {
+	mut body := el('body', '', '')
+	mut outer := el('div', 'outer', '')
+	inner := el('div', 'inner', '')
+	attach(mut outer, inner)
+	attach(mut body, outer)
+	l := layouter('', 800)
+	b := l.layout(body)
+	o := box_for(b, 'outer')
+	i := box_for(b, 'inner')
+	assert i.rect.y == o.rect.y
+	assert i.rect.x == o.rect.x
+	assert i.rect.height == 20
+	assert o.rect.height == 20
+}
+
+// --- inline content ---------------------------------------------------------
+
+fn test_an_inline_child_becomes_an_anonymous_block() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut div, text_el('hello'))
+	attach(mut body, div)
+	l := layouter('span { display: inline }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.children.len == 1
+	assert d.children[0].is_anonymous
+	assert d.children[0].text == 'hello'
+	assert d.children[0].rect.height == 20
+}
+
+fn test_a_display_none_child_is_skipped_entirely() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	// Both spans carry text, so the count below is about `display` and not about
+	// which of them happened to have something to contribute.
+	mut hidden := el('span', 'hidden', '')
+	attach(mut hidden, text_el('gone'))
+	mut shown := el('span', 'shown', '')
+	attach(mut shown, text_el('kept'))
+	attach(mut div, hidden, shown)
+	attach(mut body, div)
+	l := layouter('#hidden { display: none } span { display: inline }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.children.len == 1
+	assert d.children[0].text == 'kept'
+}
+
+fn test_text_is_shaped_onto_the_content_box() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut div, text_el('abc'))
+	attach(mut body, div)
+	l := layouter('span { display: inline }', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	anon := d.children[0]
+	assert anon.glyphs.len > 0
+	// The baseline is inside the content box: below the top edge, and no lower than
+	// the bottom of the line.
+	assert anon.content.y >= 0
+	for g in anon.glyphs {
+		assert g.y > f64(anon.content.y)
+		assert g.y <= f64(anon.content.y + anon.content.height)
+	}
+}
+
+// --- the user-agent sheet in the loop ---------------------------------------
+
+fn test_the_default_body_margin_puts_content_eight_pixels_in() {
+	mut root := el('html', '', '')
+	mut body := el('body', 'body', '')
+	mut div := el('div', 'd', '')
+	attach(mut body, div)
+	attach(mut root, body)
+	l := style.new_engine([style.Sheet{
+		style:  css.parse(css.user_agent_css + ' * { ' + line + ' }')
+		origin: style.Origin.user_agent
+	}])
+	lay := &Layouter{ engine: l, state: &selector.State{}, fonts: text.new_font_library(), viewport_width: 800, viewport_height: 800 }
+	b := lay.layout(root)
+	d := box_for(b, 'd')
+	// html has no margin, body has 8px, and the div sits inside body's content box.
+	assert d.rect.x == 8
+	assert d.content.width == 800 - 16
+}
+
+fn test_the_user_agent_sheet_makes_a_paragraph_a_block() {
+	mut root := el('html', '', '')
+	mut body := el('body', 'body', '')
+	p := el('p', 'p', '')
+	attach(mut body, p)
+	attach(mut root, body)
+	l := style.new_engine([style.Sheet{
+		style:  css.parse(css.user_agent_css)
+		origin: style.Origin.user_agent
+	}])
+	lay := &Layouter{ engine: l, state: &selector.State{}, fonts: text.new_font_library(), viewport_width: 800, viewport_height: 800 }
+	b := lay.layout(root)
+	assert box_for(b, 'p').rect.width == 800 - 16
+}
+
+fn test_a_text_box_does_not_inherit_its_parent_s_background() {
+	// `background-color` is not an inherited property. An anonymous text box that kept
+	// its parent's would be painted by the parent *and* by itself, which is invisible
+	// for an opaque colour and exactly double-dark for a translucent one.
+	mut root := el('html', '', '')
+	mut body := el('body', 'body', '')
+	mut div := el('div', 'd', '')
+	attach(mut div, text_el('hello'))
+	attach(mut body, div)
+	attach(mut root, body)
+	d := box_for(layouter('div { background-color: rgba(255, 0, 0, 0.5) }', 800).layout(root),
+		'd')
+	assert d.children.len == 1
+	assert d.children[0].style.background_color == raster.transparent
+}
+
+fn test_an_inline_element_does_not_paint_its_own_background() {
+	// Phase 1 gives an inline element one anonymous block rather than one per line, so
+	// painting its background would cover the containing block instead of the text. A
+	// highlighted span needs line boxes, which is Phase 2.
+	mut root := el('html', '', '')
+	mut body := el('body', 'body', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 's', '')
+	attach(mut span, text_el('hello'))
+	attach(mut div, span)
+	attach(mut body, div)
+	attach(mut root, body)
+	d := box_for(layouter('#s { display: inline; background-color: red }', 800).layout(root),
+		'd')
+	assert d.children.len == 1
+	assert d.children[0].style.background_color == raster.transparent
+	// The colour the text is drawn in still comes from the span.
+	assert d.children[0].style.color == d.style.color
+}
+
+// --- a whole page -----------------------------------------------------------
+
+fn test_a_page_lays_out_without_overflowing() {
+	// The Phase 1 acceptance gate says layout must be *visually* right, which is a
+	// golden test. What a unit test can say is the part that is objectively wrong:
+	// nothing wider than the viewport, and every box inside its parent.
+	mut root := el('html', '', '')
+	mut body := el('body', 'body', '')
+	mut div := el('div', 'd', '')
+	attach(mut div, text_el('a paragraph of text'))
+	attach(mut body, el('h1', 'title', ''), div)
+	attach(mut root, body)
+	l := style.new_engine([style.Sheet{
+		style:  css.parse(css.user_agent_css)
+		origin: style.Origin.user_agent
+	}])
+	lay := &Layouter{ engine: l, state: &selector.State{}, fonts: text.new_font_library(), viewport_width: 640, viewport_height: 480 }
+	b := lay.layout(root)
+	assert b.rect.width == 640
+	for box in boxes(b) {
+		assert box.rect.width <= 640
+		assert box.rect.x >= 0
+	}
+	// The heading is above the paragraph.
+	assert box_for(b, 'title').rect.y < box_for(b, 'd').rect.y
+}
+
+fn test_layout_is_repeatable() {
+	// ARCHITECTURE.md 4: the same page laid out twice is identical, or a golden image
+	// is testing the run rather than the layout.
+	mut root := el('html', '', '')
+	mut body := el('body', 'body', '')
+	attach(mut body, el('div', 'a', ''), el('div', 'b', ''))
+	attach(mut root, body)
+	first := &Layouter{ engine: style.new_engine([style.Sheet{ style: css.parse(css.user_agent_css), origin: .user_agent }]), state: &selector.State{}, fonts: text.new_font_library(), viewport_width: 800, viewport_height: 600 }
+	b1 := first.layout(root)
+	for _ in 0 .. 3 {
+		again := &Layouter{ engine: style.new_engine([style.Sheet{ style: css.parse(css.user_agent_css), origin: .user_agent }]), state: &selector.State{}, fonts: text.new_font_library(), viewport_width: 800, viewport_height: 600 }
+		b2 := again.layout(root)
+		for i in 0 .. boxes(b1).len {
+			assert boxes(b2)[i].rect == boxes(b1)[i].rect
+		}
+	}
+}
+
+fn test_a_persian_page_lays_out() {
+	// A Persian page is why this project exists. Its layout differs from an English
+	// one only in the text and in `direction`.
+	mut root := el('html', '', '')
+	mut body := el('body', 'body', '')
+	mut div := el('div', 'd', '')
+	attach(mut div, text_el('سلام دنیا'))
+	attach(mut body, div)
+	attach(mut root, body)
+	l := style.new_engine([style.Sheet{
+		style:  css.parse(css.user_agent_css + ' body { direction: rtl; } * { ' + line + ' }')
+		origin: style.Origin.author
+	}])
+	lay := &Layouter{ engine: l, state: &selector.State{}, fonts: text.new_font_library(), viewport_width: 800, viewport_height: 600 }
+	b := lay.layout(root)
+	d := box_for(b, 'd')
+	// `direction` is inherited and does not change the box's geometry in Phase 1; it
+	// is paint that aligns the run to the right. The test is that the direction
+	// reached the style at all.
+	assert d.style.direction == .rtl
+	anon := d.children[0]
+	assert anon.glyphs.len > 0
+}
