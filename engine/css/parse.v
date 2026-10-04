@@ -281,3 +281,13 @@ fn (mut p Parser) skip_bad_declaration() {
 		}
 	}
 }
+// parse_declarations parses a bare declaration list: what is inside a rule block, or the
+// whole of a `style` attribute.
+//
+// It is a separate entry point rather than a flag on parse because the two have nothing
+// else in common -- one expects rules and the other must not be given them -- and a
+// `style="p { color: red }"` attribute is exactly as wrong as it looks.
+pub fn parse_declarations(src string) []Declaration {
+	mut p := Parser{ toks: tokenize(src) }
+	return p.parse_declaration_block()
+}

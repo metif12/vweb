@@ -260,3 +260,70 @@ fn test_an_unknown_property_is_not_supported() {
 	assert !supports_property('grid-template-columns')
 	assert !supports_property('box-shadow')
 }
+// --- inline style attributes -------------------------------------------------
+
+fn compute_with_inline(inline string, sheet string) Style {
+	mut node := &html.Tag{ name: 'div', attributes: map[string]string{} }
+	if inline != '' {
+		node.attributes['style'] = inline
+	}
+	base := initial()
+	ctx := Context{ font_size: 16.0 }
+	mut sheets := []Sheet{}
+	if sheet != '' {
+		sheets << Sheet{ style: css.parse(sheet), origin: Origin.author }
+	}
+	mut e := new_engine(sheets)
+	return e.compute(node, &base, &ctx, unsafe { nil })
+}
+
+fn test_an_inline_style_is_applied() {
+	s := compute_with_inline('color: red', '')
+	assert s.color == red()
+}
+
+fn test_an_inline_style_beats_an_author_rule() {
+	// The whole reason the attribute exists: it is the last word from the author, short of
+	// `!important`.
+	s := compute_with_inline('color: red', 'div { color: blue }')
+	assert s.color == red()
+}
+
+fn test_a_sheet_beats_a_lower_specificity_inline_style_only_when_the_inline_is_important() {
+	s := compute_with_inline('color: red !important', 'div { color: blue }')
+	assert s.color == red()
+}
+
+fn test_an_inline_shorthand_expands() {
+	// Expansion happens per declaration, so an inline `margin: 1px 2px` has to become four
+	// longhands or it would compete with a stylesheet's `margin-left` by name and lose.
+	s := compute_with_inline('margin: 1px 2px', '')
+	assert s.margin.top.value == 1.0
+	assert s.margin.left.value == 2.0
+}
+
+fn test_an_inline_shorthand_beats_a_sheet_for_the_same_side() {
+	s := compute_with_inline('margin-left: 20px', 'div { margin: 10px }')
+	assert s.margin.left.value == 20.0
+	assert s.margin.top.value == 10.0
+}
+
+fn test_an_empty_style_attribute_changes_nothing() {
+	s := compute_with_inline('', 'div { color: blue }')
+	assert s.color == blue()
+}
+
+fn test_a_nonsense_inline_declaration_is_dropped_not_fatal() {
+	// The same rule as for a stylesheet: an invalid declaration is ignored, and the rest
+	// of the attribute still applies.
+	s := compute_with_inline('color: not-a-colour; font-weight: bold', '')
+	assert s.color == black()
+	assert s.font_weight == .bold
+}
+
+fn test_a_media_query_inside_a_style_attribute_is_not_a_declaration() {
+	// `style="p { color: red }"` is not a thing. It must be dropped rather than parsed as
+	// a property named `p`.
+	s := compute_with_inline('div { color: red }', '')
+	assert s.color == black()
+}

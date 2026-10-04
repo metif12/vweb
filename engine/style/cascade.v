@@ -515,7 +515,37 @@ pub fn (e &Engine) compute(el &html.Tag, parent &Style, ctx &Context, state &sel
 	for decl in e.winning(el, state) {
 		s.apply(decl, ctx)
 	}
+	for decl in inline_declarations(el) {
+		s.apply(Declaration{ decl: decl, origin: .author }, ctx)
+	}
 	return s
+}
+
+// inline_declarations reads a `style` attribute into declarations.
+//
+// Precedence comes from *when* these are applied, not from the fields on the wrapper:
+// `compute` applies them after every winning author declaration, and `apply` is a
+// last-write-wins, so the attribute beats the stylesheet. It loses only to `!important`,
+// because an `!important` inline declaration is still an `!important` one and the rank
+// that says so travels with it.
+//
+// The wrapper carries only a name and an origin because nothing reads the other two on
+// this path. Filling them in with a made-up specificity would be a lie that the next
+// reader would believe.
+fn inline_declarations(el &html.Tag) []css.Declaration {
+	attr := el.attributes['style']
+	if attr == '' {
+		return []css.Declaration{}
+	}
+	// `css.parse_declarations` is the same parser the cascade uses for a block, so an
+	// inline list understands comments, `!important` and semicolons as a stylesheet does.
+	mut out := []css.Declaration{}
+	for decl in css.parse_declarations(attr) {
+		for one in expand(decl) {
+			out << one
+		}
+	}
+	return out
 }
 
 // apply writes one declaration into a style. An unrecognised or invalid declaration
