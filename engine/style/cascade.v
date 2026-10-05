@@ -312,9 +312,9 @@ fn supports_display(value string) bool {
 // supported_properties is every property name `apply` acts on, plus the shorthands it
 // expands. It is a list rather than a switch because it is data, and a test asserts it
 // against `apply` so the two cannot drift.
-const supported_properties = ['color', 'background', 'background-color', 'border', 'border-color',
-	'border-style', 'border-width', 'border-top', 'border-right', 'border-bottom', 'border-left',
-	'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+const supported_properties = ['box-sizing', 'color', 'background', 'background-color', 'border',
+	'border-color', 'border-style', 'border-width', 'border-top', 'border-right', 'border-bottom',
+	'border-left', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
 	'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
 	'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'display',
 	'direction', 'font-family', 'font-size', 'font-style', 'font-weight', 'height', 'line-height',
@@ -660,6 +660,15 @@ pub fn (mut s Style) apply(decl Declaration, ctx &Context) {
 			st := parse_border_style(v) or { return }
 			mut side := side_index(decl.decl.name)
 			s.border_style[side] = st
+		}
+		// An unknown keyword is ignored rather than treated as `content-box`, so a typo
+		// does not silently switch the sizing model of everything below it.
+		'box-sizing' {
+			match v.trim_space().to_lower() {
+				'content-box' { s.box_sizing = .content_box }
+				'border-box' { s.box_sizing = .border_box }
+				else { return }
+			}
 		}
 		'width' { s.width = parse_length(v) or { return } }
 		'height' { s.height = parse_length(v) or { return } }

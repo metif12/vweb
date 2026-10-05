@@ -48,10 +48,13 @@ pub mut:
 	// min_width and max_width exist now even though only Phase 2 reads them, because
 	// they have to be *in* the struct for the cascade to store them, and adding a
 	// field later means re-deciding where it goes.
-	min_width           Length
-	min_height          Length
-	max_width           Length
-	max_height          Length
+	min_width  Length
+	min_height Length
+	max_width  Length
+	max_height Length
+	// Sizing model for width and height, and the one field in this struct that changes
+	// how every other length in it is read rather than being a value in its own right.
+	box_sizing          BoxSizing
 	list_style_type     ListStyleType
 	list_style_position ListStylePosition
 	vertical_align      VerticalAlign
@@ -209,6 +212,7 @@ pub fn initial() Style {
 		min_height:          Length{ unit: .auto }
 		max_width:           Length{ unit: .none }
 		max_height:          Length{ unit: .none }
+		box_sizing:          .content_box
 		list_style_type:     .disc
 		list_style_position: .outside
 		vertical_align:      .baseline
@@ -251,6 +255,21 @@ pub fn inherited_properties() []string {
 	return ['color', 'font-size', 'font-family', 'font-weight', 'font-style', 'line-height',
 		'text-align', 'text-decoration', 'white-space', 'direction', 'list-style-type',
 		'list-style-position', 'vertical-align', 'text-transform', 'visibility']
+}
+
+// BoxSizing decides what `width` and `height` measure.
+//
+// `content_box` is the spec default and the one the whole engine was written against: the
+// width is the content, and padding and border are added outside it. `border_box` is what
+// `box-sizing: border-box` selects, where the width *includes* padding and border, so the
+// content box is what is left after subtracting them.
+//
+// The two are not interchangeable and the difference is visible without measurement: a
+// `width: 100px` div with 20px padding on each side is 140 wide under `content_box` and 100
+// under `border-box`.
+pub enum BoxSizing {
+	content_box
+	border_box
 }
 
 // is_block_level reports whether this display value gets a box of its own in the

@@ -398,7 +398,13 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 
 	frame := border.left + border.right + padding.left + padding.right
 	available := containing_width - margin.left - margin.right - frame
-	content_width := box_width(s.width, s.min_width, s.max_width, available, containing_width, &ctx)
+	// Under `border-box` a specified width covers padding and border, so the content box is
+	// what remains after subtracting them. Only a *specified* width is adjusted: `auto`
+	// already received the space left over after margins, border and padding in
+	// `available`, and subtracting again would shrink it twice.
+	bs := s.box_sizing == .border_box
+	content_width := box_width(s.width, s.min_width, s.max_width, available, containing_width,
+		&ctx, bs, frame)
 
 	// The margin box starts at `y`: the caller has already advanced past this box's
 	// collapsed top margin, so the border box does too, and adding `margin.top` here as
@@ -607,8 +613,13 @@ fn height_clamp(content_height int, min_h style.Length, max_h style.Length, ctx 
 	return max_of(v, 0)
 }
 
+// `border_box` and `frame` are what `box-sizing: border-box` needs: the specified value
+// and both bounds are border-box sizes, so padding and border come off each of them. The
+// bounds are converted as well as `width`, because `min-width` is interpreted in the same
+// box as `width` -- clamping a content-box min against a border-box width is how a
+// `border-box` box ends up smaller than its own floor.
 fn box_width(w style.Length, min_w style.Length, max_w style.Length, available int,
-	containing_width int, ctx &style.Context) int {
+	containing_width int, ctx &style.Context, border_box bool, frame int) int {
 	mut v := match w.unit {
 		.auto, .none {
 			if available < 0 {
@@ -625,6 +636,9 @@ fn box_width(w style.Length, min_w style.Length, max_w style.Length, available i
 	mut lo := 0
 	if min_w.unit != .auto {
 		lo = px(resolve(min_w, ctx, f64(containing_width)))
+		if border_box {
+			lo -= frame
+		}
 		if lo < 0 {
 			lo = 0
 		}
@@ -632,12 +646,23 @@ fn box_width(w style.Length, min_w style.Length, max_w style.Length, available i
 	mut hi := -1
 	if max_w.unit != .none {
 		hi = px(resolve(max_w, ctx, f64(containing_width)))
+		if border_box && hi >= 0 {
+			hi -= frame
+		}
 		if hi < 0 {
 			hi = -1
 		}
 	}
 	if hi >= 0 && hi < lo {
 		hi = lo
+	}
+	// A specified width under `border-box` loses the frame; `auto` must not, because
+	// `available` was already reduced by margins, border and padding above.
+	if border_box && w.unit != .auto && w.unit != .none {
+		v -= frame
+		if v < 0 {
+			v = 0
+		}
 	}
 	if v < lo {
 		v = lo

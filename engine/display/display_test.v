@@ -289,6 +289,55 @@ fn test_min_height_also_bounds_an_explicit_height() {
 	assert word_box('div { height: 200px; max-height: 60px }', 'abc', 800).rect.height == 60
 }
 
+// --- box-sizing (docs/PHASES.md, box model) ----------------------------------
+
+fn test_a_border_box_width_includes_its_padding() {
+	// The visible difference, and the reason it cannot be checked by eye alone: the same
+	// declaration is 140 wide under `content-box` and 100 under `border-box`, because the
+	// 20px of padding on each side comes out of the width instead of being added to it.
+	content := word_box('div { width: 100px; padding: 0 20px }', 'abc', 800)
+	border := word_box('div { width: 100px; padding: 0 20px; box-sizing: border-box }', 'abc', 800)
+	assert content.rect.width == 140
+	assert content.content.width == 100
+	assert border.rect.width == 100
+	assert border.content.width == 60
+}
+
+fn test_box_sizing_is_the_default_content_box() {
+	// Stated rather than assumed: the engine's long-standing behaviour is
+	// `content-box`, and this pins it so that changing the initial value is a visible
+	// break rather than a quiet one.
+	assert word_box('div { width: 100px; padding: 0 20px; box-sizing: content-box }',
+		'abc', 800).rect.width == 140
+	// An unknown keyword must not fall back to content-box silently.
+	assert word_box('div { width: 100px; padding: 0 20px; box-sizing: border-boxx }',
+		'abc', 800).rect.width == 140
+}
+
+fn test_border_box_bounds_are_read_in_the_same_box_as_the_width() {
+	// `min-width` is interpreted in whichever box `width` is, so under `border-box` the
+	// frame has to come off the floor too. Clamping a border-box width against a
+	// content-box floor is how a box ends up narrower than the minimum that was asked for:
+	// with 40px of padding either side, a content-box `min-width: 100px` would leave 20
+	// content pixels, which is less than the 100 the author wrote.
+	b := word_box('div { width: 60px; min-width: 200px; padding: 0 20px; box-sizing: border-box }',
+		'abc', 800)
+	assert b.rect.width == 200
+	assert b.content.width == 160
+	// And the ceiling, same reasoning.
+	assert word_box('div { width: 400px; max-width: 120px; padding: 0 20px; box-sizing: border-box }',
+		'abc', 800).rect.width == 120
+}
+
+fn test_box_sizing_does_not_shrink_an_auto_width_twice() {
+	// `width: auto` already receives the space left after margins, border and padding.
+	// Subtracting the frame again would take it off twice, so an auto-width bordered box
+	// has to come out exactly the width of its parent.
+	b := word_box('div { padding: 0 20px; box-sizing: border-box }', 'abc', 300)
+	assert b.rect.width == 300
+	assert b.content.width == 260
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {
