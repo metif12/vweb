@@ -360,6 +360,9 @@ fn expand(d css.Declaration) []css.Declaration {
 		'border' {
 			return expand_border(d)
 		}
+		'border-top', 'border-right', 'border-bottom', 'border-left' {
+			return expand_border_side(d)
+		}
 		else {
 			return [d]
 		}
@@ -424,10 +427,66 @@ fn expand_sides_named(d css.Declaration, names [4]string) []css.Declaration {
 // kept as the width, which `apply` will reject -- the same outcome as rejecting it
 // here, with less code.
 fn expand_border(d css.Declaration) []css.Declaration {
+	comps := split_border_components(d.value)
+	mut out := []css.Declaration{}
+	for part in [
+		css.Declaration{ name: 'border-width', value: comps[0], important: d.important },
+		css.Declaration{ name: 'border-style', value: comps[1], important: d.important },
+		css.Declaration{ name: 'border-color', value: comps[2], important: d.important },
+	] {
+		if part.value == '' {
+			continue
+		}
+		out << expand_border_sides(part)
+	}
+	return out
+}
+
+// expand_border_side handles `border-top: 1px solid red`, the single-side shorthands.
+//
+// These were in `supported_properties` from the start, so the name survived the cascade
+// and `apply` was handed `border-bottom: 2px solid #12407a`. `apply` knows the longhands
+// only, matched the declaration against no property it acts on, and did nothing. No
+// error, no warning, no border: every page using `border-left` or `border-bottom`, which
+// is most of them, lost that border *and* the layout space it should have reserved.
+//
+// The unit test for this was named `test_a_border_shorthand_with_one_side_does_not_touch_
+// the_others` and used `border-top-width`, which is a longhand. It passed, and it covered
+// none of these four names. A test whose name describes a shorthand and whose body uses
+// the longhand is worse than no test, because it is read as coverage.
+//
+// Only the named side is emitted. `border-bottom` must leave the top, right and left
+// exactly as they were, which is what makes it usable in a cascade against a `border`
+// shorthand on a rule of higher specificity.
+fn expand_border_side(d css.Declaration) []css.Declaration {
+	comps := split_border_components(d.value)
+	// `border-top` -> `top`, so the longhands read `border-top-width`.
+	side := d.name['border-'.len..]
+	mut out := []css.Declaration{}
+	for k in 0 .. 3 {
+		if comps[k] == '' {
+			continue
+		}
+		out << css.Declaration{
+			name:      'border-' + side + '-' + ['width', 'style', 'color'][k]
+			value:     comps[k]
+			important: d.important
+		}
+	}
+	return out
+}
+
+// split_border_components pulls the width, the style and the colour out of a border
+// shorthand value, in whatever order they were written and with any of them missing.
+//
+// `border: 2px` and `border-bottom: solid` are both valid, and a component that is
+// absent stays empty so the caller can leave that longhand out entirely -- emitting
+// `border-top-style: ''` would reset a style that a lower-specificity rule had set.
+fn split_border_components(value string) [3]string {
 	mut width := ''
 	mut style := ''
 	mut colour := ''
-	for part in split_top_level(d.value) {
+	for part in split_top_level(value) {
 		if style == '' && parse_border_style(part) != none {
 			style = part
 			continue
@@ -440,18 +499,7 @@ fn expand_border(d css.Declaration) []css.Declaration {
 			width = part
 		}
 	}
-	mut out := []css.Declaration{}
-	for part in [
-		css.Declaration{ name: 'border-width', value: width, important: d.important },
-		css.Declaration{ name: 'border-style', value: style, important: d.important },
-		css.Declaration{ name: 'border-color', value: colour, important: d.important },
-	] {
-		if part.value == '' {
-			continue
-		}
-		out << expand_border_sides(part)
-	}
-	return out
+	return [width, style, colour]
 }
 
 // user_agent_engine returns an engine holding the UA stylesheet alone, which is the

@@ -418,13 +418,46 @@ fn test_border_shorthands() {
 }
 
 fn test_a_border_shorthand_with_one_side_does_not_touch_the_others() {
-	// `border-top-width` alone must leave the right side at its initial width even
-	// when a `border` shorthand also appears, and the two must be resolved by
-	// specificity rather than by which was written first.
-	e := author_engine('p { border: 1px solid red } #i { border-top-width: 9px }')
+	// `border-bottom` must leave the top, right and left alone, so it can be cascaded
+	// against a `border` shorthand on a rule of higher specificity.
+	//
+	// This test used to be written with `border-top-width`, a longhand, which is why it
+	// passed for as long as the four single-side *shorthands* were dead.
+	e := author_engine('p { border: 1px solid red } #i { border-bottom: 9px solid blue }')
 	s := style_of(e, el('p', 'i', ''), initial(), default_context())
-	assert s.border_width.top.value == 9.0
+	assert s.border_width.bottom.value == 9.0
+	assert s.border_color[2] == raster.rgb(0, 0, 255)
+	assert s.border_width.top.value == 1.0
 	assert s.border_width.right.value == 1.0
+	assert s.border_width.left.value == 1.0
+	assert s.border_color[0] == raster.rgb(255, 0, 0)
+	assert s.border_color[1] == raster.rgb(255, 0, 0)
+}
+
+fn test_every_single_side_border_shorthand_expands() {
+	// All four, because the bug was a missing match arm and a test of one arm cannot
+	// see a missing arm in another. The value order is permuted on purpose: a border
+	// shorthand accepts width, style and colour in any order.
+	e := author_engine('p { border-top: solid 1px; border-right: 2px dotted; ' +
+		'border-bottom: #0f0; border-left: thick double red }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.border_width.top.value == 1.0
+	assert s.border_style[0] == .solid
+	assert s.border_width.right.value == 2.0
+	assert s.border_style[1] == .dotted
+	assert s.border_color[2] == raster.rgb(0, 255, 0)
+	assert s.border_color[3] == raster.rgb(255, 0, 0)
+}
+
+fn test_a_single_side_border_shorthand_may_omit_components() {
+	// `border-bottom: solid` sets the style and nothing else. It must not blank the
+	// width or the colour, because `apply` reading an empty longhand would reset a
+	// value a lower-specificity rule had set.
+	e := author_engine('p { border: 1px solid red } #i { border-bottom: solid }')
+	s := style_of(e, el('p', 'i', ''), initial(), default_context())
+	assert s.border_style[2] == .solid
+	assert s.border_width.bottom.value == 1.0
+	assert s.border_color[2] == raster.rgb(255, 0, 0)
 }
 
 fn test_background_shorthand_sets_the_colour_and_ignores_the_rest() {
