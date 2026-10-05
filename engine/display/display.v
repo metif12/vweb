@@ -127,19 +127,29 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 		element:   el
 		font_size: child_ctx.font_size
 	}
+	// Inline-level children accumulate into one anonymous box rather than one each.
+	//
+	// One each was Phase 1's stand-in for inline layout and it was wrong in a way that
+	// showed on every page with a single `<b>` in it:
+	//
+	//	<p>plain then <b>bold</b> then plain</p>
+	//
+	// built three anonymous boxes, so it rendered as three lines, one per run, with the
+	// text in the right order but stacked down the page instead of running across it. A
+	// block's inline content is one continuous stream of text that line boxes break; making
+	// each run its own block made every run its own line.
+	//
+	// What this costs is per-run styling: the accumulated text takes the block's font, so
+	// `<span style="font-size:28px">` inside a paragraph is now the paragraph's size. That
+	// is the next step, not this one, and it is a better trade than the right text on the
+	// wrong lines.
+	mut pending := ''
 	for child in el.children {
 		if tree.is_text(child) {
-			if child.content.trim(' ') == '' {
-				// Whitespace between block children collapses to nothing. Phase 2's line
-				// breaking decides what to do with the rest of it.
-				continue
-			}
-			b.children << &Box{
-				style:        text_style_of(s)
-				text:         child.content
-				font_size:    child_ctx.font_size
-				is_anonymous: true
-			}
+			// Whitespace is kept rather than dropped. Dropping a whitespace-only node
+			// between two inline elements glues them together: `<b>a</b> <i>b</i>` would
+			// become "ab". Collapsing happens once, on the accumulated text.
+			pending += child.content
 			continue
 		}
 		if !tree.is_element(child) {
@@ -150,25 +160,84 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 			continue
 		}
 		if !cs.display.is_block_level() {
-			// Phase 1's inline handling: an inline element contributes its text to one
-			// anonymous block, which a line box will later split properly. Collecting
-			// it here rather than dropping it is the difference between a page that
-			// renders and one that does not.
-			txt := collect_text(child)
-			if txt == '' {
+			if child.name == 'br' {
+				// A forced break ends the line, so what has accumulated becomes its own box
+				// and the text after it starts another. This is also the only reason `<br>`
+				// worked at all: with one box per run, the runs either side of it landed on
+				// separate lines by accident. Merging without handling `br` here would have
+				// quietly removed the only line break the engine had.
+				//
+				// The text that follows is *inside* the `br` node as far as `net/html` is
+				// concerned -- `collect_text` on a `<br>` is what returns "two" out of
+				// `<p>one<br>two</p>` -- so it is read from there and starts the next box.
+				// Without this the text after a `<br>` vanished, which is what happened the
+				// first time round.
+				if box := inline_box(pending, s, child_ctx.font_size) {
+					b.children << box
+				}
+				pending = collect_text(child)
 				continue
 			}
-			b.children << &Box{
-				style:        text_style_of(cs)
-				text:         txt
-				font_size:    child_ctx.font_size
-				is_anonymous: true
-			}
+			pending += collect_text(child)
 			continue
 		}
+		if box := inline_box(pending, s, child_ctx.font_size) {
+			b.children << box
+		}
+		pending = ''
 		b.children << l.build(child, cs, &child_ctx)
 	}
+	if box := inline_box(pending, s, child_ctx.font_size) {
+		b.children << box
+	}
 	return b
+}
+
+// inline_box turns accumulated inline text into an anonymous box, or into nothing when
+// there is nothing in it.
+fn inline_box(content string, s style.Style, font_size f64) ?&Box {
+	t := collapse_inline_space(content, s.white_space)
+	if t == '' {
+		return none
+	}
+	return &Box{
+		style:        text_style_of(s)
+		text:         t
+		font_size:    font_size
+		is_anonymous: true
+	}
+}
+
+// collapse_inline_space applies CSS whitespace collapsing to a block's inline text: a run
+// of whitespace is one space, and leading and trailing whitespace goes.
+//
+// Only for `normal`. `pre` and `pre-wrap` keep their newlines and their runs, and
+// `nowrap` still collapses -- it is about line *breaking*, not about whitespace -- so
+// collapsing on `nowrap` is right and leaving it alone would double every space in it.
+//
+// The block's own `white-space` decides for the whole run. A `<pre>` inside a normal
+// paragraph would need its own rule per run, which arrives with per-run styling; doing it
+// per block now would be a second approximation of the same thing.
+fn collapse_inline_space(content string, ws style.WhiteSpace) string {
+	if ws == .pre || ws == .pre_wrap || ws == .pre_line {
+		return content.trim(' \n\t')
+	}
+	mut b := strings.new_builder(content.len)
+	mut in_space := false
+	mut started := false
+	for c in content {
+		if c == ` ` || c == `\n` || c == `\t` || c == `\r` {
+			in_space = true
+			continue
+		}
+		if in_space && started {
+			b.write_byte(` `)
+		}
+		in_space = false
+		started = true
+		b.write_u8(c)
+	}
+	return b.str()
 }
 
 // text_style_of is a style for a box that only holds text, with the properties that

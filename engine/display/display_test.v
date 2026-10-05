@@ -186,6 +186,111 @@ fn test_a_width_wider_than_the_page_overflows_it() {
 	assert box_for(b, 'd').rect.width == 5000
 }
 
+// --- inline content ------------------------------------------------------------
+
+fn test_inline_elements_share_one_line() {
+	// Phase 1 made every inline run its own block, so this rendered as three lines, one per
+	// run, with the right words in the right order running *down* the page. A block's inline
+	// content is one stream of text that line boxes break, not one block per run.
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 'i', '')
+	attach(mut span, text_el('bold'))
+	attach(mut div, text_el('plain then '), span, text_el(' then plain'))
+	attach(mut body, div)
+	l := layouter('', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.children.len == 1
+	assert d.children[0].text == 'plain then bold then plain'
+	assert d.children[0].line_count == 1
+	assert d.rect.height == 20
+}
+
+fn test_whitespace_between_inline_elements_is_collapsed_to_one_space() {
+	// Dropping a whitespace-only node between two inline elements glues them together:
+	// `<b>a</b> <i>b</i>` became "ab".
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 'i', '')
+	attach(mut span, text_el('b'))
+	attach(mut div, text_el('a '), span, text_el(' c'))
+	attach(mut body, div)
+	l := layouter('', 800)
+	b := l.layout(body)
+	assert box_for(b, 'd').children[0].text == 'a b c'
+}
+
+fn test_runs_of_whitespace_collapse_and_the_edges_are_dropped() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut div, text_el('\n   spaced \t out \n\n here \n'))
+	attach(mut body, div)
+	l := layouter('', 800)
+	b := l.layout(body)
+	assert box_for(b, 'd').children[0].text == 'spaced out here'
+}
+
+fn test_pre_keeps_its_whitespace() {
+	mut body := el('body', '', '')
+	mut pre := el('pre', 'd', '')
+	attach(mut pre, text_el('a  b'))
+	attach(mut body, pre)
+	l := layouter('pre { white-space: pre }', 800)
+	b := l.layout(body)
+	assert box_for(b, 'd').children[0].text == 'a  b'
+}
+
+fn test_a_br_breaks_the_line_and_keeps_the_text_after_it() {
+	// `net/html` nests the text that follows a `<br>` inside the `br` node, so
+	// `collect_text` on a `<br>` is what produces "two" out of `<p>one<br>two</p>`. Reading
+	// the break without reading that loses the text after it, which is what happened.
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut br := el('br', '', '')
+	attach(mut br, text_el('two'))
+	attach(mut div, text_el('one'), br)
+	attach(mut body, div)
+	l := layouter('', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	assert d.children.len == 2
+	assert d.children[0].text == 'one'
+	assert d.children[1].text == 'two'
+	assert d.rect.height == 40
+}
+
+fn test_a_block_child_still_gets_its_own_box_and_the_inline_runs_around_it_stay_separate() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut inner := el('div', 'e', '')
+	attach(mut inner, text_el('inner'))
+	attach(mut div, text_el('before'), inner, text_el('after'))
+	attach(mut body, div)
+	l := layouter('', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	// before, the inner block, after.
+	assert d.children.len == 3
+	assert d.children[0].text == 'before'
+	assert d.children[2].text == 'after'
+}
+
+fn test_an_inline_element_with_no_text_contributes_nothing() {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 'i', '')
+	attach(mut span, text_el('   '))
+	attach(mut div, text_el('a'), span, text_el('b'))
+	attach(mut body, div)
+	l := layouter('', 800)
+	b := l.layout(body)
+	d := box_for(b, 'd')
+	// `a` and `b` with a whitespace-only span between them still make one box with "a b".
+	assert d.children.len == 1
+	assert d.children[0].text == 'a b'
+}
+
 // --- height -----------------------------------------------------------------
 
 fn test_height_is_the_content_height() {
