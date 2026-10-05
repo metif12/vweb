@@ -29,13 +29,65 @@ import strings
 /// more useful to this engine's user than a refusal. Malformed input is the common case
 /// on the web, not the exceptional one.
 pub fn parse(src string) &html.Tag {
-	return document_element(html.parse(src).get_root())
+	mut el := document_element(html.parse(blank_script_bodies(src)).get_root())
+	decode_references(mut el)
+	return el
 }
 
 /// parse_file reads a file and parses it. Unlike parse it can fail, because the file can
 /// be absent.
 pub fn parse_file(path string) !&html.Tag {
-	return document_element(html.parse_file(path).get_root())
+	mut el := document_element(html.parse_file(path).get_root())
+	decode_references(mut el)
+	return el
+}
+
+/// decode_references decodes every character reference in a parsed document, in place.
+///
+/// It walks the tree once and touches two things: the `content` of a text node and the
+/// values in an element's attributes. Both are decoded in HTML, and an engine that skips
+/// either one produces a page that is subtly wrong in a way nobody spots -- a `title` with
+/// `&amp;` in it is the kind of thing that only shows up when a tab label is already open
+/// next to the other one.
+///
+/// `style` is skipped, and only `style`.
+///
+/// Its content is CSS, where `&amp;` is not an ampersand but an unknown escape that a
+/// browser leaves exactly as written. Decoding it would corrupt the sheet.
+///
+/// `script` used to be skipped here too, on the grounds that its content is JavaScript.
+/// It is not skipped any more, for a reason worth writing down. Script bodies are now
+/// removed before the parse (`blank_script_bodies`), so there is no raw text left in a
+/// script element to protect -- and the skip was actively losing markup. `net/html` nests
+/// everything after a `<script>` *inside* the script node, so `<p>Tom &amp; Jerry</p>`
+/// after a script lived under it, was never walked, and rendered with a literal `&amp;` in
+/// it. Protecting a body that no longer exists cost a real page its text.
+fn decode_references(mut el &html.Tag) {
+	if el.name == 'style' {
+		return
+	}
+	if el.name == 'text' {
+		el.content = decode_text(el.content)
+		return
+	}
+	// The keys are collected before the map is written to. Writing a map while ranging
+	// over it is undefined, and this walk runs on every element of every document, so
+	// "undefined" here means a page that decodes its own class attributes at random.
+	mut keys := el.attributes.keys()
+	for key in keys {
+		value := el.attributes[key] or { '' }
+		el.attributes[key] = decode_attribute(value)
+	}
+	// Indexed rather than ranged: a loop variable over an immutable slice cannot yield a
+	// mutable reference, and `mut child := child_ref` then mutates a copy. Here the copy
+	// would happen to alias, because the element is a pointer, which is exactly why it
+	// is worth not relying on.
+	mut i := 0
+	for i < el.children.len {
+		mut child := el.children[i]
+		decode_references(mut child)
+		i++
+	}
 }
 
 /// document_element returns the document element of a parsed document.
