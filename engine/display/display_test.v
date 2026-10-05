@@ -291,7 +291,47 @@ fn test_an_inline_element_with_no_text_contributes_nothing() {
 	assert d.children[0].text == 'a b'
 }
 
-// --- height -----------------------------------------------------------------
+// --- the inline tokenizer ------------------------------------------------------
+
+// These are the tests that say what stage B is built on. `layout_runs` turns a box's runs
+// into atoms and an atom list into glyphs, and every glyph it produces comes from one of
+// these strings. When a box laid out "ab" carried four glyphs, this was where to look.
+
+fn test_a_word_is_one_token_not_one_token_per_character() {
+	assert tokenize_inline('ab', .normal) == ['ab']
+	assert tokenize_inline('hello', .normal) == ['hello']
+}
+
+fn test_a_space_is_its_own_token() {
+	assert tokenize_inline('a b', .normal) == ['a', ' ', 'b']
+	assert tokenize_inline('a b c', .normal) == ['a', ' ', 'b', ' ', 'c']
+}
+
+fn test_runs_of_whitespace_collapse_to_one_space_token() {
+	// The collapse has already happened in `collapse_inline_space` by this point, but the
+	// tokenizer must not undo it or reintroduce the gaps it removed.
+	assert tokenize_inline('a  b', .normal) == ['a', ' ', 'b']
+}
+
+fn test_a_trailing_space_is_a_token_so_a_line_can_end_in_one() {
+	assert tokenize_inline('ab ', .normal) == ['ab', ' ']
+}
+
+fn test_a_leading_space_is_kept_because_a_run_is_not_a_line() {
+	// The space at the start of a middle run is between two words. layout_runs is what
+	// refuses to start a *line* with a space; dropping it here glued run boundaries
+	// together, and "plain then " + "bold" came out as "plain then boldthen".
+	assert tokenize_inline(' ab', .normal) == [' ', 'ab']
+}
+
+fn test_pretends_its_newlines_as_their_own_tokens() {
+	assert tokenize_inline('a\nb', .pre) == ['a', '\n', 'b']
+	assert tokenize_inline('a  b', .pre) == ['a', ' ', ' ', 'b']
+}
+
+fn test_an_empty_string_is_no_tokens() {
+	assert tokenize_inline('', .normal).len == 0
+}
 
 fn test_height_is_the_content_height() {
 	mut body := el('body', '', '')

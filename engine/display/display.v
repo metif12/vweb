@@ -37,6 +37,20 @@ pub mut:
 	height int
 }
 
+// InlineRun is a stretch of a block's inline text in one style.
+//
+// A block's inline content is a *sequence* of these, not one string. That is the whole
+// difference between Phase 2 stage A and stage B: stage A concatenated every run into one
+// string and so lost `<b>bold</b>` and `font-size:28px` inside a paragraph, while stage B
+// keeps each stretch's own style so the line breaker can break *between* runs and shape
+// each one with the font it asked for.
+pub struct InlineRun {
+pub mut:
+	text      string
+	style     style.Style
+	font_size f64
+}
+
 // Box is annotated @[heap] because boxes are allocated with `&Box{}` and then
 // written through that pointer after the frame that made them has returned. Without
 // it V may place them on the stack, and the first write through the stale pointer is
@@ -61,7 +75,13 @@ pub mut:
 	font_size f64
 	// text is the content this box lays out itself. A box with element children has
 	// none.
+	//
+	// It is the concatenation of `runs`, kept so that a caller asking "what does this box
+	// say" gets one answer. Layout uses `runs`, because it is the only one of the two that
+	// can tell a bold stretch from the plain text around it.
 	text string
+	// runs is the inline content in order, each stretch in its own style.
+	runs []InlineRun
 	// glyphs are text's positioned output, kept on the box so paint does not reshape
 	// the same run twice.
 	glyphs []text.PositionedGlyph
@@ -143,13 +163,17 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 	// `<span style="font-size:28px">` inside a paragraph is now the paragraph's size. That
 	// is the next step, not this one, and it is a better trade than the right text on the
 	// wrong lines.
-	mut pending := ''
+	mut pending := []InlineRun{}
 	for child in el.children {
 		if tree.is_text(child) {
 			// Whitespace is kept rather than dropped. Dropping a whitespace-only node
 			// between two inline elements glues them together: `<b>a</b> <i>b</i>` would
-			// become "ab". Collapsing happens once, on the accumulated text.
-			pending += child.content
+			// become "ab". Collapsing happens once, in `inline_box`.
+			pending << InlineRun{
+				text:      child.content
+				style:     s
+				font_size: child_ctx.font_size
+			}
 			continue
 		}
 		if !tree.is_element(child) {
@@ -175,16 +199,28 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 				if box := inline_box(pending, s, child_ctx.font_size) {
 					b.children << box
 				}
-				pending = collect_text(child)
+				pending = [
+					InlineRun{
+						text:      collect_text(child)
+						style:     cs
+						font_size: child_ctx.font_size
+					},
+				]
 				continue
 			}
-			pending += collect_text(child)
+			// An inline element's text is collected into one run in *its* style, not the
+			// block's. This is the line stage A could not draw.
+			pending << InlineRun{
+				text:      collect_text(child)
+				style:     cs
+				font_size: child_ctx.font_size
+			}
 			continue
 		}
 		if box := inline_box(pending, s, child_ctx.font_size) {
 			b.children << box
 		}
-		pending = ''
+		pending = []
 		b.children << l.build(child, cs, &child_ctx)
 	}
 	if box := inline_box(pending, s, child_ctx.font_size) {
@@ -193,18 +229,73 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 	return b
 }
 
-// inline_box turns accumulated inline text into an anonymous box, or into nothing when
-// there is nothing in it.
-fn inline_box(content string, s style.Style, font_size f64) ?&Box {
-	t := collapse_inline_space(content, s.white_space)
-	if t == '' {
+// inline_box turns accumulated inline runs into an anonymous box, or into nothing when
+// every run in them is empty.
+//
+// `text_style_of` is applied per run rather than once to the box. It clears the
+// properties that belong to an element's own box -- background, borders, margin and
+// padding -- and an inline element's background *is* its own, so this is what stops
+// `<span style="background:yellow">` painting behind the whole block.
+fn inline_box(in_runs []InlineRun, s style.Style, font_size f64) ?&Box {
+	if in_runs.len == 0 {
 		return none
+	}
+	mut runs := []InlineRun{cap: in_runs.len}
+	for r in in_runs {
+		t := collapse_inline_space(r.text, s.white_space)
+		if t == '' {
+			continue
+		}
+		runs << InlineRun{
+			text:      t
+			style:     text_style_of(r.style)
+			font_size: r.font_size
+		}
+	}
+	if runs.len == 0 {
+		return none
+	}
+	// The block's own leading and trailing whitespace goes, but not a run in the middle:
+	// the space between `<b>a</b>` and `<i>b</i>` is inside the block and has to survive,
+	// which is the whole reason runs are collapsed individually rather than joined first.
+	trim_leading(mut runs)
+	trim_trailing(mut runs)
+	if runs.len == 0 {
+		return none
+	}
+	// Built after the trims, not before. It was not, and `text` came out as
+	// " spaced out here " for the one block whose leading and trailing whitespace is
+	// supposed to go.
+	mut flat := strings.new_builder(64)
+	for r in runs {
+		flat.write_string(r.text)
 	}
 	return &Box{
 		style:        text_style_of(s)
-		text:         t
+		text:         flat.str()
+		runs:         runs
 		font_size:    font_size
 		is_anonymous: true
+	}
+}
+
+fn trim_leading(mut runs []InlineRun) {
+	for i in 0 .. runs.len {
+		runs[i].text = runs[i].text.trim_left(' \n\t\r')
+		if runs[i].text != '' {
+			return
+		}
+	}
+}
+
+fn trim_trailing(mut runs []InlineRun) {
+	mut i := runs.len - 1
+	for i >= 0 {
+		runs[i].text = runs[i].text.trim_right(' \n\t\r')
+		if runs[i].text != '' {
+			return
+		}
+		i--
 	}
 }
 
@@ -220,21 +311,20 @@ fn inline_box(content string, s style.Style, font_size f64) ?&Box {
 // per block now would be a second approximation of the same thing.
 fn collapse_inline_space(content string, ws style.WhiteSpace) string {
 	if ws == .pre || ws == .pre_wrap || ws == .pre_line {
-		return content.trim(' \n\t')
+		// No collapsing. The edges are still trimmed by the caller.
+		return content
 	}
 	mut b := strings.new_builder(content.len)
 	mut in_space := false
-	mut started := false
 	for c in content {
 		if c == ` ` || c == `\n` || c == `\t` || c == `\r` {
+			if !in_space {
+				b.write_byte(` `)
+			}
 			in_space = true
 			continue
 		}
-		if in_space && started {
-			b.write_byte(` `)
-		}
 		in_space = false
-		started = true
 		b.write_u8(c)
 	}
 	return b.str()
@@ -346,25 +436,19 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	if b.text != '' {
 		mut fs := font_style_of(s, b.font_size, &ctx)
 		m := l.fonts.line_metrics(&fs)
-		line_height := px(m.line_height)
-		lines := l.fonts.wrap(text.WrapRequest{
-			content:        b.text
-			style:          &fs
-			max_width:      wrap_width(s.white_space, content_width)
-			origin_x:       f64(content_x)
-			first_baseline: f64(baseline_of(cursor, m.ascent, m.descent, f64(line_height)))
-			line_height:    f64(line_height)
-		})
+		lines := l.layout_runs(mut b, &ctx, content_x,
+			baseline_of(cursor, m.ascent, m.descent, f64(px(m.line_height))), content_width)
 		b.line_count = lines.len
 		// One flat list rather than a list per line: paint draws glyphs, not lines, and
 		// a caller asking "where is the text of this box" wants every glyph in one
 		// place. Each glyph already carries the baseline it was shaped for.
 		mut glyphs := []text.PositionedGlyph{}
+		mut height := 0
 		for ln in lines {
 			glyphs << ln.glyphs
+			height += ln.height
 		}
 		b.glyphs = glyphs
-		height := line_height * lines.len
 		b.content = Rect{ x: content_x, y: content_y, width: content_width, height: height }
 		cursor += height
 		previous_bottom = 0
@@ -596,4 +680,197 @@ pub fn boxes(root &Box) []&Box {
 
 pub fn (b &Box) background() raster.Color {
 	return b.style.background_color
+}
+
+// LaidLine is one line of a box's inline content, after breaking and shaping.
+struct LaidLine {
+	glyphs []text.PositionedGlyph
+	// width is the line's advance. Nothing outside the tests reads it yet; bidi will want
+	// it for alignment.
+	width  f64
+	height int
+}
+
+// Atom is one measurable piece of a line: a word, or a space, within one run's style.
+//
+// The alternative -- measuring whole runs and breaking between them -- cannot break
+// inside a long stretch of ordinary text, and a paragraph with one `<b>` in it is one
+// stretch of ordinary text either side of that `<b>`.
+struct Atom {
+	run     int
+	content string
+	width   f64
+	space   bool
+}
+
+// layout_runs breaks a box's inline content into lines and shapes each one where it will
+// be drawn.
+//
+// `text.FontLibrary.wrap` cannot do this job: it takes one string and one style and hands
+// them to `vtext.wrap_paragraph`, so it cannot express `<b>bold</b>` in a paragraph at all.
+// That is why this exists rather than a parameter being added down there.
+//
+// Lines advance by the *box's* line height, not by the tallest font on the line. That is a
+// simplification: a `<span style="font-size:28px">` in a 16px paragraph overlaps its
+// neighbours rather than pushing them apart. Half-leading to the tallest item is the
+// correct rule and is recorded in PHASES.md as part of this step.
+fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int,
+	first_baseline int, content_width int) []LaidLine {
+	mut fs := font_style_of(b.style, b.font_size, ctx)
+	line_height := px(l.fonts.line_metrics(&fs).line_height)
+	max_w := wrap_width(b.style.white_space, content_width)
+
+	// Atoms first, across every run, so a break can land on a run boundary as easily as on
+	// a space inside one.
+	mut atoms := []Atom{}
+	for ri, r in b.runs {
+		run_style := font_style_of(r.style, r.font_size, ctx)
+		for tok in tokenize_inline(r.text, b.style.white_space) {
+			atoms << Atom{
+				run:     ri
+				content: tok
+				width:   l.fonts.advance(&run_style, tok)
+				space:   tok.len > 0 && (tok[0] == ` ` || tok[0] == `\t` || tok[0] == `\n`)
+			}
+		}
+	}
+	if atoms.len == 0 {
+		return []LaidLine{}
+	}
+
+	// Greedy fill. A space never starts a line and never causes one, so the break is taken
+	// before the word that would not fit rather than after the space before it.
+	mut lines := [][]Atom{}
+	mut cur := []Atom{}
+	mut w := 0.0
+	for a in atoms {
+		if a.space && cur.len == 0 {
+			continue
+		}
+		if !a.space && cur.len > 0 && w + a.width > max_w {
+			lines << cur
+			cur = []
+			w = 0.0
+		}
+		cur << a
+		w += a.width
+	}
+	if cur.len > 0 {
+		lines << cur
+	}
+
+	// Shape each line. Consecutive atoms of the same run are shaped as one string, so a
+	// word spanning two atoms still joins and shapes as a word.
+	mut out := []LaidLine{cap: lines.len}
+	for li, line_atoms in lines {
+		baseline := f64(first_baseline + li * line_height)
+		mut x := f64(content_x)
+		mut glyphs := []text.PositionedGlyph{}
+		mut i := 0
+		for i < line_atoms.len {
+			mut j := i
+			mut seg := strings.new_builder(32)
+			for j < line_atoms.len && line_atoms[j].run == line_atoms[i].run {
+				seg.write_string(line_atoms[j].content)
+				j++
+			}
+			r := b.runs[line_atoms[i].run]
+			run_style := font_style_of(r.style, r.font_size, ctx)
+			glyphs << l.fonts.shape(seg.str(), &run_style, x, baseline)
+			mut seg_w := 0.0
+			for k in i .. j {
+				seg_w += line_atoms[k].width
+			}
+			x += seg_w
+			i = j
+		}
+		out << LaidLine{
+			glyphs: glyphs
+			width:  x - f64(content_x)
+			height: line_height
+		}
+	}
+	return out
+}
+
+// tokenize_inline splits a run's text into words and runs of spaces.
+//
+// This is the smallest piece of Phase 2 stage B and it is separated out first because
+// everything above it is arithmetic on what this returns: a token becomes an `Atom`, an
+// atom's width decides where a line breaks, and the atoms on a line are joined and
+// shaped. When a box holding the text "ab" laid out with **four** glyphs in it, this was
+// the first place worth looking, because a word that tokenized per character would
+// account for exactly that doubling.
+//
+// `pre` keeps its newlines as tokens of their own, which is what makes them break lines.
+// A leading space is dropped rather than tokenized: a line cannot start with one, and
+// `layout_runs` skips leading spaces anyway -- it is dropped here so that a box's first
+// token is a word and the arithmetic downstream never sees a space it has to special-case.
+// A trailing space *is* kept, so that a line ending in one is measured honestly.
+fn tokenize_inline(content string, ws style.WhiteSpace) []string {
+	pre := ws == .pre || ws == .pre_wrap || ws == .pre_line
+	mut out := []string{}
+	mut cur := ''
+	// A whitespace run has been seen and not yet emitted as a token. Deferring it is what
+	// collapses a run of them: `a  b` emits one space, not two, and a leading one is
+	// dropped rather than emitted, because out.len is still zero.
+	mut pending := false
+	for c in content {
+		if c == ` ` || c == `\t` || c == `\r` {
+			if cur != '' {
+				out << cur
+				cur = ''
+			}
+			// `pre` keeps its whitespace, so each one is emitted where it stands. For
+			// everything else it is deferred and collapsed, and doing both is how "a  b"
+			// produced three spaces in `pre` and one in `normal`.
+			if pre {
+				out << ' '
+			} else {
+				pending = true
+			}
+			continue
+		}
+		if c == `\n` && !pre {
+			// A newline is whitespace like any other for `normal`.
+			if cur != '' {
+				out << cur
+				cur = ''
+			}
+			pending = true
+			continue
+		}
+		if c == `\n` && pre {
+			// A newline in `pre` breaks a line, so it is a token in its own right rather
+			// than a space that happens to be wide.
+			if cur != '' {
+				out << cur
+				cur = ''
+			}
+			out << '\n'
+			pending = false
+			continue
+		}
+		if pending {
+			// No `out.len > 0` guard here. A run is not a line: the space at the start of
+			// a middle run sits between two words, and dropping it turned
+			// "plain then " + "bold" + " then plain" into "plain then boldthen plain".
+			// `layout_runs` is where a line refuses to *start* with a space.
+			out << ' '
+			pending = false
+		}
+		// `rune(c).str()`, not `c.str()`. On a `u8`, `str()` produces the *number* as
+		// text: 'a' becomes "97" and 'b' becomes "98", so "ab" tokenized to "9798" and a
+		// whole page rendered as its own ASCII codes. The cast is the whole difference
+		// between a character and its index.
+		cur += rune(c).str()
+	}
+	if cur != '' {
+		out << cur
+	}
+	// A trailing space is kept so a line that ends in one is measured honestly.
+	if pending {
+		out << ' '
+	}
+	return out
 }
