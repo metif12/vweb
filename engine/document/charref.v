@@ -245,9 +245,6 @@ const c1_remap = [
 	0x0178,
 ]
 
-fn is_digit_or_hex(c u8) bool {
-	return (c >= `0` && c <= `9`) || (c >= `a` && c <= `f`) || (c >= `A` && c <= `F`)
-}
 
 fn digit_value(c u8) int {
 	if c >= `0` && c <= `9` {

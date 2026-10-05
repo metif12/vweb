@@ -210,10 +210,20 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 			}
 			// An inline element's text is collected into one run in *its* style, not the
 			// block's. This is the line stage A could not draw.
+			//
+			// The font size is resolved from the element's own `font-size` against the
+			// *block's* context rather than copied from that context. `child_ctx` holds the
+			// block's font size, so a `<span style="font-size:28px">` in a 16px paragraph was
+			// being given 16px -- and it drew at 16px too, in every size.
+			//
+			// Colour, weight and italic came through correctly, because they travel in the
+			// style and the style *is* the element's own. That is what made this so easy to
+			// miss: every other per-run property worked, and the one that did not is the
+			// one a reader notices first.
 			pending << InlineRun{
 				text:      collect_text(child)
 				style:     cs
-				font_size: child_ctx.font_size
+				font_size: resolve(cs.font_size, &child_ctx, f64(l.viewport_width))
 			}
 			continue
 		}

@@ -415,6 +415,31 @@ fn test_border_and_padding_add_to_the_height() {
 	assert box_for(b, 'd').rect.height == 20 + 2 * (3 + 7)
 }
 
+fn test_an_inline_font_size_reaches_the_glyphs() {
+	// Asserted on the glyph, not on the run's `font_size` field. The field was 16 while
+	// the style said 28 and the glyph was 16 too, so a test on the field alone would have
+	// passed on the broken code -- which is roughly what happened when a render was read as
+	// showing 28px text and it was not.
+	//
+	// Colour, weight and italic travelled correctly all along, because they live in the
+	// style and the style was the element's own. `font-size` was being copied from the
+	// *block's* context instead, so of the four per-run properties it was the only one
+	// broken, and it is the one a reader notices first.
+	mut body := el('body', '', '')
+	mut span := el('span', 'i', '')
+	attach(mut span, text_el('abc'))
+	mut div := el('div', 'd', '')
+	attach(mut div, span)
+	attach(mut body, div)
+	l := layouter('span { font-size: 28px }', 800)
+	anon := box_for(l.layout(body), 'd').children[0]
+	assert anon.runs[0].font_size == 28.0
+	assert anon.glyphs[0].size == 28.0
+	// A run at the block's own size is untouched.
+	plain := box_for(layouter('', 800).layout(body), 'd').children[0]
+	assert plain.glyphs[0].size == 16.0
+}
+
 // --- used border width ------------------------------------------------------
 
 fn test_a_border_width_with_no_style_reserves_nothing() {
