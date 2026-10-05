@@ -40,7 +40,6 @@ fn style_of(e &Engine, el &html.Tag, parent Style, ctx &Context) Style {
 	return e.compute(el, &parent, ctx, &selector.State{})
 }
 
-
 fn author_engine(sources ...string) &Engine {
 	mut sheets := [Sheet{ style: css.parse(css.user_agent_css), origin: Origin.user_agent }]
 	for src in sources {
@@ -206,6 +205,7 @@ fn test_rgb_channels_are_clamped() {
 	assert color('rgb(300, -20, 0)') == raster.rgb(255, 0, 0)
 	assert color('rgba(0, 0, 0, 5)') == raster.rgba(0, 0, 0, 255)
 }
+
 // --- cascade ----------------------------------------------------------------
 
 fn test_the_author_sheet_beats_the_user_agent_sheet() {
@@ -300,7 +300,7 @@ fn test_the_inheritance_table_is_the_documented_one() {
 		value := sample_value(name)
 		wrapped := Declaration{
 			decl: css.Declaration{
-				name: name
+				name:  name
 				value: value
 			}
 		}
@@ -356,32 +356,74 @@ fn test_display_is_not_inherited() {
 
 // --- shorthands -------------------------------------------------------------
 
+// assert_edges checks all four sides at once, because a shorthand that fills three
+// correctly and leaves the fourth wrong is the failure this section is about -- and is
+// exactly the failure it found.
+fn assert_edges(e Edges, top f64, right f64, bottom f64, left f64) {
+	assert e.top.value == top
+	assert e.right.value == right
+	assert e.bottom.value == bottom
+	assert e.left.value == left
+}
+
+fn margin_of(src string) Edges {
+	e := author_engine(src)
+	return style_of(e, el('p', '', ''), initial(), default_context()).margin
+}
+
+fn padding_of(src string) Edges {
+	e := author_engine(src)
+	return style_of(e, el('p', '', ''), initial(), default_context()).padding
+}
+
 fn test_the_margin_shorthand_in_every_form() {
-	assert (parse_edges('1px') or { panic('parse') }) == Edges{
-		Length{ value: 1.0, unit: .px }
-		Length{ value: 1.0, unit: .px }
-		Length{ value: 1.0, unit: .px }
-		Length{ value: 1.0, unit: .px }
-	}
-	assert (parse_edges('1px 2px') or { panic('parse') }) == Edges{
-		Length{ value: 1.0, unit: .px }
-		Length{ value: 2.0, unit: .px }
-		Length{ value: 1.0, unit: .px }
-		Length{ value: 2.0, unit: .px }
-	}
-	assert (parse_edges('1px 2px 3px') or { panic('parse') }) == Edges{
-		Length{ value: 1.0, unit: .px }
-		Length{ value: 2.0, unit: .px }
-		Length{ value: 3.0, unit: .px }
-		Length{ value: 2.0, unit: .px }
-	}
-	e := parse_edges('1px 2px 3px 4px') or { panic('parse') }
-	assert e.top.value == 1.0 && e.right.value == 2.0 && e.bottom.value == 3.0 && e.left.value == 4.0
+	// These were six assertions against `parse_edges`, a private function that nothing but
+	// the test called. `expand` had already made it dead: a four-value `margin` is split
+	// into four longhands before `apply` sees it, so the real parser never had a
+	// four-value box shorthand to read. The tests passed over a path that did not exist.
+	//
+	// These go through the cascade instead, which is the path a stylesheet takes, and they
+	// assert the same four forms. Writing them is what found that the two-value form never
+	// set its bottom: `parse_edges` got that case right and `expand` did not, so the old
+	// test was asserting the behaviour of code that nothing ran.
+	assert_edges(margin_of('p { margin: 1px }'), 1.0, 1.0, 1.0, 1.0)
+	// This line is the regression. Before the fix it read 1.0 2.0 0.0 2.0.
+	assert_edges(margin_of('p { margin: 1px 2px }'), 1.0, 2.0, 1.0, 2.0)
+	assert_edges(margin_of('p { margin: 1px 2px 3px }'), 1.0, 2.0, 3.0, 2.0)
+	assert_edges(margin_of('p { margin: 1px 2px 3px 4px }'), 1.0, 2.0, 3.0, 4.0)
+}
+
+fn test_the_padding_shorthand_in_every_form() {
+	// The same four forms on the other property that uses them. `expand` puts `margin` and
+	// `padding` through one code path but emits different names, and it is the emitted name
+	// that decides whether the value arrives.
+	assert_edges(padding_of('p { padding: 5px }'), 5.0, 5.0, 5.0, 5.0)
+	assert_edges(padding_of('p { padding: 5px 6px }'), 5.0, 6.0, 5.0, 6.0)
+	assert_edges(padding_of('p { padding: 5px 6px 7px }'), 5.0, 6.0, 7.0, 6.0)
+	assert_edges(padding_of('p { padding: 5px 6px 7px 8px }'), 5.0, 6.0, 7.0, 8.0)
 }
 
 fn test_an_edges_shorthand_with_too_many_values_is_rejected() {
-	assert parse_edges('1px 2px 3px 4px 5px') == none
-	assert parse_edges('') == none
+	// Five values is not a form of `margin`. `expand` cannot expand it, so it passes the
+	// declaration through unchanged and `apply` matches it against no property it acts on.
+	// Asserted against a stylesheet that sets something else, so it says "this declaration
+	// did nothing" without hard-coding what the initial value happens to be.
+	blank := margin_of('p { color: red }')
+	assert margin_of('p { margin: 1px 2px 3px 4px 5px }') == blank
+	assert margin_of('p { margin: }') == blank
+}
+
+fn test_a_border_width_keyword_length_is_understood() {
+	// `parse_edge_component` was the only evidence that `thin`/`medium`/`thick` were
+	// supported, and it was dead code, so nothing was pinning them. They work because
+	// `parse_length` checks `keyword_length` itself; this is what says so.
+	e := author_engine('p { border-top-width: thick; border-left-width: thin }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.border_width.top.value > 0.0
+	assert s.border_width.left.value > 0.0
+	// `thick` is thicker than `thin`, which a keyword that parsed to one and the same
+	// thing twice would get wrong.
+	assert s.border_width.top.value > s.border_width.left.value
 }
 
 fn test_a_longhand_beats_the_shorthand_of_the_same_side() {

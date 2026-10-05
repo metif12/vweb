@@ -358,8 +358,8 @@ fn test_tokenize_always_ends_with_exactly_one_eof() {
 
 fn test_tokenize_terminates_on_awkward_input() {
 	// Every one of these would loop forever if a branch failed to advance.
-	for src in ['(', ')', '"', "'", '\\', '#', 'url(', 'url("', '-', '--', '<!--', '-->',
-		'1e', '1e+', '.', '+.', '@'] {
+	for src in ['(', ')', '"', "'", '\\', '#', 'url(', 'url("', '-', '--', '<!--', '-->', '1e',
+		'1e+', '.', '+.', '@'] {
 		toks := tokenize(src)
 		assert toks[toks.len - 1].kind == .eof
 	}

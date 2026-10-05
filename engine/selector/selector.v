@@ -28,7 +28,7 @@ pub enum Combinator {
 // for it to relate; combinators[i] joins parts[i-1] to parts[i].
 pub struct ComplexSelector {
 pub:
-	parts []CompoundSelector
+	parts       []CompoundSelector
 	combinators []Combinator
 }
 
@@ -39,10 +39,10 @@ pub:
 	// tag is the element name to match, empty for none. HTML element names are
 	// matched case-insensitively and the document tree has already lower-cased
 	// them, so the comparison is exact.
-	tag string
-	id string
-	classes []string
-	attrs []AttrSelector
+	tag            string
+	id             string
+	classes        []string
+	attrs          []AttrSelector
 	pseudo_classes []PseudoClass
 	// pseudo_element is empty for none. Phase 1 accepts and records it so a
 	// stylesheet parses; nothing generates one yet.
@@ -56,8 +56,8 @@ pub:
 // AttrSelector is one `[name op "value"]` test.
 pub struct AttrSelector {
 pub:
-	name string
-	op AttrOp
+	name  string
+	op    AttrOp
 	value string
 	// case_insensitive is the `i` flag. It is honoured for the value comparison
 	// and ignored for `exists`, where there is no value to compare.
@@ -114,12 +114,12 @@ pub enum PseudoKind {
 pub struct PseudoClass {
 pub:
 	kind PseudoKind
-	nth Nth
+	nth  Nth
 	// inner is the argument of `:not()`, a selector list so that `:not(a, b)`
 	// parses; it is a list in a struct rather than a slice payload in a sum type
 	// for the same reason as PseudoKind above.
 	inner SelectorList
-	word string
+	word  string
 }
 
 // Nth is an `an+b` step, as in `:nth-child(2n+1)`.
@@ -135,9 +135,9 @@ pub:
 // which is why this is a function and not a subtraction.
 pub struct Specificity {
 pub:
-	ids int
+	ids     int
 	classes int
-	types int
+	types   int
 }
 
 // cmp orders two specificities, returning a negative number, zero or a positive
@@ -169,7 +169,7 @@ fn clamp16(v int) int {
 }
 
 fn (s Specificity) add(other Specificity) Specificity {
-	return Specificity{ s.ids + other.ids, s.classes + other.classes, s.types + other.types }
+	return Specificity{s.ids + other.ids, s.classes + other.classes, s.types + other.types}
 }
 
 // specificity adds up the specificity of every complex selector in the list, which

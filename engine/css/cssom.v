@@ -29,7 +29,7 @@ type Rule = QualifiedRule | AtDeclarationRule | NestedRule
 // that apply to whatever it matches.
 pub struct QualifiedRule {
 pub:
-	prelude string
+	prelude      string
 	declarations []Declaration
 }
 
@@ -38,17 +38,17 @@ pub:
 // shape, with no declarations.
 pub struct AtDeclarationRule {
 pub:
-	name string
-	prelude string
+	name         string
+	prelude      string
 	declarations []Declaration
 }
 
 // NestedRule is an at-rule whose block is a rule list, such as @media.
 pub struct NestedRule {
 pub:
-	name string
+	name    string
 	prelude string
-	rules []Rule
+	rules   []Rule
 }
 
 // Declaration is one `name: value` pair. `value` is normalized text: comments
@@ -56,8 +56,8 @@ pub:
 // test can assert on it.
 pub struct Declaration {
 pub:
-	name string
-	value string
+	name      string
+	value     string
 	important bool
 }
 

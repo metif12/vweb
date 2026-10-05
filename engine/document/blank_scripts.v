@@ -54,7 +54,7 @@ pub fn blank_script_bodies(src string) string {
 			b.write_string(src[i..])
 			break
 		}
-// The open tag is kept: the element must survive, only its body goes.
+		// The open tag is kept: the element must survive, only its body goes.
 		b.write_string(src[i..open_end])
 		close_at := close_tag_index(src, open_end, 'script')
 		if close_at < 0 {

@@ -128,8 +128,8 @@ fn test_faces_candidates_are_base_names_not_paths() {
 	// goes through a search directory and the lists must not carry paths. A
 	// backslash or slash in any candidate means the search directory is being
 	// bypassed and the host's fonts are back in charge.
-	for name in [...sans_faces, ...serif_faces, ...mono_faces, ...arabic_faces,
-		...sans_bold_faces, ...serif_bold_faces, ...mono_bold_faces] {
+	for name in [...sans_faces, ...serif_faces, ...mono_faces, ...arabic_faces, ...sans_bold_faces,
+		...serif_bold_faces, ...mono_bold_faces] {
 		assert !name.contains('/')
 		assert !name.contains('\\')
 		assert name.ends_with('.ttf') || name.ends_with('.ttc') || name.ends_with('.otf')
@@ -235,9 +235,9 @@ fn test_word_spacing_only_counts_spaces() {
 	assert with_spacing > plain + 4.0
 	// The same style on text with no space must not change at all.
 	assert lib.advance(&style, 'ab') == lib.advance(&FontStyle{
-		family:        'sans-serif'
-		size:          20.0
-		word_spacing:  5.0
+		family:       'sans-serif'
+		size:         20.0
+		word_spacing: 5.0
 	}, 'ab')
 }
 
@@ -341,10 +341,10 @@ fn test_glyph_cache_stores_and_returns() {
 		size_q:  2048
 	}) == none
 	gc.put(GlyphKey{
-			font_id: 0
-			gid:     1
-			size_q:  2048
-		}, vtext.GlyphBitmap{
+		font_id: 0
+		gid:     1
+		size_q:  2048
+	}, vtext.GlyphBitmap{
 		coverage: []u8{len: 4}
 		width:    2
 		height:   2
@@ -534,9 +534,9 @@ fn test_draw_run_skips_glyphs_with_no_outline() {
 	c.clear(raster.white)
 	before := count_non_background(c)
 	text.draw_run(mut c, [PositionedGlyph{
-		x:     0.0
-		y:     0.0
-		gid:   1
+		x:      0.0
+		y:      0.0
+		gid:    1
 		bitmap: vtext.GlyphBitmap{
 			coverage: []u8{}
 			width:    0
@@ -716,6 +716,7 @@ fn test_some_named_candidates_are_absent_and_that_is_fine() {
 	assert lib.find_face('cambria.ttf') == ''
 	assert lib.find_face(serif_faces[0]) != ''
 }
+
 // --- every shaped glyph must be drawable --------------------------------------
 
 // A glyph whose font the library cannot resolve is skipped by `place_glyphs`, and a
@@ -799,6 +800,7 @@ fn test_every_glyph_of_a_persian_run_has_a_registered_font() {
 	}
 	assert missing == 0
 }
+
 fn test_shaping_a_bold_run_first_does_not_break_later_runs() {
 	// The page shapes its heading before its body text, and the heading is the only
 	// bold thing on it. If the first run leaves the library in a state where later runs
@@ -812,8 +814,7 @@ fn test_shaping_a_bold_run_first_does_not_break_later_runs() {
 
 	mut missing_after_bold := 0
 	for text in ['A paragraph with enough words in it that it has to be broken across',
-		'A bordered box with a background.', 'A box with a thick left border.',
-		'Second paragraph.'] {
+		'A bordered box with a background.', 'A box with a thick left border.', 'Second paragraph.'] {
 		for g in lib.shape(text, &regular, 0.0, 20.0) {
 			if g.font_id < 0 {
 				missing_after_bold++
@@ -846,6 +847,7 @@ fn test_wrapping_after_a_bold_run_keeps_every_glyph() {
 	}
 	assert missing == 0
 }
+
 // --- the glyph cache, on its own ----------------------------------------------
 
 // The cache round-trip is the fork in the open bug: every cache hit has been coming
@@ -889,8 +891,13 @@ fn test_the_cache_stores_one_entry_per_distinct_key() {
 	mut gc := new_glyph_cache()
 	for sub in [0, 1, 2, 3, 0, 1, 2, 3, 0, 1] {
 		bm := f.rasterize(u16(gid), 16.0, sub, 0)
-		gc.put(GlyphKey{ font_id: fid, gid: gid, size_q: quantise_size(16.0), sub_x: sub,
-			sub_y: 0 }, bm)
+		gc.put(GlyphKey{
+			font_id: fid
+			gid:     gid
+			size_q:  quantise_size(16.0)
+			sub_x:   sub
+			sub_y:   0
+		}, bm)
 	}
 	assert gc.len() == 4
 	assert gc.unpackable() == 0

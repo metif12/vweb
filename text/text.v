@@ -56,10 +56,10 @@ pub mut:
 	family         string = 'sans-serif'
 	weight         int    = 400
 	italic         bool
-	size           f64   = 16.0
-	line_height    f64   = 0.0 // 0 means the font's natural line height
-	letter_spacing f64   = 0.0
-	word_spacing   f64   = 0.0
+	size           f64             = 16.0
+	line_height    f64             = 0.0 // 0 means the font's natural line height
+	letter_spacing f64             = 0.0
+	word_spacing   f64             = 0.0
 	direction      vtext.Direction = .auto
 }
 
@@ -108,12 +108,10 @@ pub:
 // gave four bits per axis and validated against 1 << 4, which accepted sub_x == 4.
 // That is a value quantise_subpixel can never produce, so it was dead space that
 // looked like a supported input.
-pub const (
-	key_font_bits = 12 // 4096 fonts
-	key_gid_bits  = 24 // 16.7 million glyphs; the largest CJK fonts are ~65k
-	key_size_bits = 24 // 1/64 px, biased by half, so ±131072 px
-	key_sub_bits  = 2  // quarter pixels: 0..3
-)
+pub const key_font_bits = 12 // 4096 fonts
+pub const key_gid_bits = 24 // 16.7 million glyphs; the largest CJK fonts are ~65k
+pub const key_size_bits = 24 // 1/64 px, biased by half, so ±131072 px
+pub const key_sub_bits = 2 // quarter pixels: 0..3
 
 // pack folds a key into a u64, or returns none if a field does not fit.
 //

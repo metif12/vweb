@@ -73,12 +73,12 @@ pub enum TokenKind {
 // Each flag is meaningful for exactly one kind and is false elsewhere.
 pub struct Token {
 pub:
-	kind TokenKind
-	value string
-	num f64
-	unit string
+	kind   TokenKind
+	value  string
+	num    f64
+	unit   string
 	is_int bool
-	is_id bool
+	is_id  bool
 }
 
 pub fn tokenize(src string) []Token {
@@ -95,12 +95,10 @@ pub fn tokenize(src string) []Token {
 
 // Control bytes have no printable literal, so they are named. `nul` doubles as the
 // end-of-input marker: see `Lexer.peek`.
-const (
-	tab = u8(0x09)
-	nl = u8(0x0a)
-	nul = u8(0x00)
-	bs = u8(0x5c)
-)
+const tab = u8(0x09)
+const nl = u8(0x0a)
+const nul = u8(0x00)
+const bs = u8(0x5c)
 
 struct Lexer {
 mut:

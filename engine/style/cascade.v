@@ -402,13 +402,27 @@ fn expand_sides_named(d css.Declaration, names [4]string) []css.Declaration {
 		vals[i] = p
 		i++
 	}
-	// The one-value form repeats; the two- and three-value forms share the right
-	// value with the left.
+	// The one-value form repeats; the two-value form is top/bottom then left/right, and
+	// the three-value form is top, left/right, bottom.
+	//
+	// The two-value case set only the right side. Its bottom was never assigned, so
+	// `margin-bottom` was emitted with an empty value, `parse_length('')` failed, and the
+	// bottom margin was silently left at zero -- for the second most common shorthand form
+	// there is. `margin: 10px 20px` gave a paragraph no bottom margin at all, which on a
+	// page of paragraphs is collapsed vertical spacing everywhere.
+	//
+	// The unit test that used to cover this asserted the correct answer and passed, because
+	// it tested `parse_edges` -- a private function that nothing but the test called, and
+	// which got the two-value case right. The live expander got it wrong underneath it.
+	// Deleting the dead function and writing the test against the cascade is what found it.
 	if i == 1 {
 		vals[1] = vals[0]
 		vals[2] = vals[0]
 		vals[3] = vals[0]
-	} else if i == 2 || i == 3 {
+	} else if i == 2 {
+		vals[2] = vals[0]
+		vals[3] = vals[1]
+	} else if i == 3 {
 		vals[3] = vals[1]
 	}
 	mut out := []css.Declaration{}

@@ -37,30 +37,23 @@ pub:
 	a u8
 }
 
-pub const (
-	white = Color{255, 255, 255, 255}
-	black = Color{0, 0, 0, 255}
-	transparent = Color{0, 0, 0, 0}
-	red = Color{255, 0, 0, 255}
-	green = Color{0, 255, 0, 255}
-	blue = Color{0, 0, 255, 255}
-)
+pub const white = Color{255, 255, 255, 255}
+pub const black = Color{0, 0, 0, 255}
+pub const transparent = Color{0, 0, 0, 0}
+pub const red = Color{255, 0, 0, 255}
+pub const green = Color{0, 255, 0, 255}
+pub const blue = Color{0, 0, 255, 255}
 
 // rgb builds an opaque colour.
 pub fn rgb(r int, g int, b int) Color {
-	return Color{ u8(clamp255(r)), u8(clamp255(g)), u8(clamp255(b)), 255 }
+	return Color{u8(clamp255(r)), u8(clamp255(g)), u8(clamp255(b)), 255}
 }
 
 // rgba builds a colour with an explicit alpha, premultiplying as it goes so the
 // result satisfies r <= a.
 pub fn rgba(r int, g int, b int, a int) Color {
 	aa := u8(clamp255(a))
-	return Color{
-		u8(clamp255(r * int(aa) / 255)),
-		u8(clamp255(g * int(aa) / 255)),
-		u8(clamp255(b * int(aa) / 255)),
-		aa,
-	}
+	return Color{u8(clamp255(r * int(aa) / 255)), u8(clamp255(g * int(aa) / 255)), u8(clamp255(b * int(aa) / 255)), aa}
 }
 
 @[inline]
@@ -122,7 +115,7 @@ pub fn (c &Canvas) at(x int, y int) Color {
 		return transparent
 	}
 	o := (y * c.width + x) * 4
-	return Color{ c.pix[o], c.pix[o + 1], c.pix[o + 2], c.pix[o + 3] }
+	return Color{c.pix[o], c.pix[o + 1], c.pix[o + 2], c.pix[o + 3]}
 }
 
 pub fn (mut c Canvas) set(x int, y int, col Color) {
@@ -214,8 +207,7 @@ fn tint(col Color, cov u8) Color {
 	}
 	// col is already premultiplied by its own alpha, so scaling alpha means
 	// scaling the channels by the same factor.
-	return Color{ u8(int(col.r) * a / int(col.a)), u8(int(col.g) * a / int(col.a)),
-		u8(int(col.b) * a / int(col.a)), u8(a) }
+	return Color{u8(int(col.r) * a / int(col.a)), u8(int(col.g) * a / int(col.a)), u8(int(col.b) * a / int(col.a)), u8(a)}
 }
 
 // blend_at composites one premultiplied source pixel into the buffer at byte
@@ -272,7 +264,7 @@ pub fn (c &Canvas) write_png(path string) ! {
 	mut straight := []u8{len: nbytes}
 	mut o := 0
 	for o < nbytes {
-		px := Color{ c.pix[o], c.pix[o + 1], c.pix[o + 2], c.pix[o + 3] }.unpremultiply()
+		px := Color{c.pix[o], c.pix[o + 1], c.pix[o + 2], c.pix[o + 3]}.unpremultiply()
 		straight[o] = px[0]
 		straight[o + 1] = px[1]
 		straight[o + 2] = px[2]

@@ -19,7 +19,7 @@ module style
 pub struct Length {
 pub mut:
 	value f64
-	unit Unit
+	unit  Unit
 }
 
 // Unit is a CSS length unit, or `auto` for a length the property sizes itself.
@@ -61,9 +61,9 @@ pub mut:
 	// font_size is the *parent's* computed font size, which is what `em` resolves
 	// against: in CSS an `em` on a font-size property itself resolves against the
 	// parent's, not its own.
-	font_size f64
-	root_font_size f64
-	viewport_width f64
+	font_size       f64
+	root_font_size  f64
+	viewport_width  f64
 	viewport_height f64
 }
 
@@ -72,9 +72,9 @@ pub mut:
 // pointer to it.
 pub fn default_context() Context {
 	return Context{
-		font_size: 16.0
-		root_font_size: 16.0
-		viewport_width: 0.0
+		font_size:       16.0
+		root_font_size:  16.0
+		viewport_width:  0.0
 		viewport_height: 0.0
 	}
 }

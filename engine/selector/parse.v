@@ -23,7 +23,7 @@ pub fn parse(text string) ?SelectorList {
 struct Parser {
 mut:
 	toks []css.Token
-	i int
+	i    int
 }
 
 fn (p &Parser) peek() css.Token {
@@ -214,13 +214,13 @@ fn (mut p Parser) parse_compound() ?CompoundSelector {
 				// compounds, not one.
 				pseudo_element = name
 				return CompoundSelector{
-					tag: tag
-					id: id
-					classes: classes
-					attrs: attrs
+					tag:            tag
+					id:             id
+					classes:        classes
+					attrs:          attrs
 					pseudo_classes: pseudos
 					pseudo_element: pseudo_element
-					universal: universal
+					universal:      universal
 				}
 			}
 			kind := pseudo_kind_of(lower) or { return none }
@@ -234,13 +234,13 @@ fn (mut p Parser) parse_compound() ?CompoundSelector {
 		return none
 	}
 	return CompoundSelector{
-		tag: tag
-		id: id
-		classes: classes
-		attrs: attrs
+		tag:            tag
+		id:             id
+		classes:        classes
+		attrs:          attrs
 		pseudo_classes: pseudos
 		pseudo_element: pseudo_element
-		universal: universal
+		universal:      universal
 	}
 }
 

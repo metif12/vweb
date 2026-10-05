@@ -45,7 +45,7 @@ pub mut:
 @[heap]
 pub struct Document {
 pub mut:
-	root &nhtml.Tag
+	root   &nhtml.Tag
 	sheets []style.Sheet
 	// warnings are things that went wrong but did not stop the render: a stylesheet that
 	// could not be fetched, most often. They are collected rather than printed so that a
@@ -66,8 +66,10 @@ pub fn parse(src string, mut ld loader.Loader) &Document {
 		if el.name == 'style' {
 			// A <style> body is a raw text node rather than child elements, which is the
 			// one place where reading markup as a tree is the wrong shape.
-			doc.sheets << style.Sheet{ style: css.parse(dom.text_content(el)),
-				origin: .author }
+			doc.sheets << style.Sheet{
+				style:  css.parse(dom.text_content(el))
+				origin: .author
+			}
 			continue
 		}
 		if el.name == 'link' && el.attributes['rel'].to_lower() == 'stylesheet' {
@@ -84,8 +86,10 @@ pub fn parse(src string, mut ld loader.Loader) &Document {
 				doc.warnings << 'cannot fetch stylesheet ' + href + ': ' + err.msg()
 				continue
 			}
-			doc.sheets << style.Sheet{ style: css.parse(res.body.bytestr()),
-				origin: .author }
+			doc.sheets << style.Sheet{
+				style:  css.parse(res.body.bytestr())
+				origin: .author
+			}
 		}
 	}
 	return doc
@@ -105,10 +109,10 @@ pub fn layout(doc &Document, width int, height int) &display.Box {
 	viewport := css.screen_context(width, height)
 	mut styles := style.new_engine_for(doc.sheets, viewport)
 	mut lay := display.Layouter{
-		engine:         styles
-		state:          &selector.State{}
-		fonts:          text.new_font_library()
-		viewport_width: width
+		engine:          styles
+		state:           &selector.State{}
+		fonts:           text.new_font_library()
+		viewport_width:  width
 		viewport_height: height
 	}
 	return lay.layout(doc.root)

@@ -177,8 +177,8 @@ fn test_truncated_rule_keeps_what_it_parsed() {
 }
 
 fn test_truncated_stylesheet_terminates() {
-	for src in ['a{b:', 'a{b', 'a{', 'a', '@media', '@media(', '@media screen', '"',
-		'/*', 'a{b:c', 'a{b:url(', '}}}', '@;', '@'] {
+	for src in ['a{b:', 'a{b', 'a{', 'a', '@media', '@media(', '@media screen', '"', '/*', 'a{b:c',
+		'a{b:url(', '}}}', '@;', '@'] {
 		_ := rules_of(src)
 	}
 }
@@ -271,8 +271,8 @@ fn test_selector_syntax_is_not_validated_here() {
 }
 
 fn test_serialize_round_trips_through_the_tokenizer() {
-	for src in ['div.main > p', 'a[href^="http"]', '1px solid red', 'url(a.png)',
-		'"a\\"b"', 'rgba(1, 2, 3, 0.5)', 'a\\ b'] {
+	for src in ['div.main > p', 'a[href^="http"]', '1px solid red', 'url(a.png)', '"a\\"b"',
+		'rgba(1, 2, 3, 0.5)', 'a\\ b'] {
 		once := serialize(tokenize(src))
 		twice := serialize(tokenize(once))
 		assert once == twice

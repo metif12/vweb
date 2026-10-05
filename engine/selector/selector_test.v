@@ -254,7 +254,7 @@ fn test_nth_child_forms() {
 fn test_nth_last_child_and_nth_of_type() {
 	assert one('li:nth-last-child(2n)').parts[0].pseudo_classes[0].kind == .nth_last_child
 	assert one('li:nth-of-type(2n)').parts[0].pseudo_classes[0].kind == .nth_of_type
-	assert one('li:nth-of-type(odd)').parts[0].pseudo_classes[0].nth == Nth{ 2, 1 }
+	assert one('li:nth-of-type(odd)').parts[0].pseudo_classes[0].nth == Nth{2, 1}
 }
 
 fn test_an_invalid_nth_invalidates_the_selector() {
@@ -271,21 +271,21 @@ fn test_lang() {
 }
 
 fn test_specificity_of_the_simple_forms() {
-	assert must_parse('p').specificity() == Specificity{ 0, 0, 1 }
-	assert must_parse('*').specificity() == Specificity{ 0, 0, 0 }
-	assert must_parse('.a').specificity() == Specificity{ 0, 1, 0 }
-	assert must_parse('#a').specificity() == Specificity{ 1, 0, 0 }
-	assert must_parse('[a]').specificity() == Specificity{ 0, 1, 0 }
-	assert must_parse('p.a#b[c]').specificity() == Specificity{ 1, 2, 1 }
-	assert must_parse('p::before').specificity() == Specificity{ 0, 0, 2 }
-	assert must_parse('div p').specificity() == Specificity{ 0, 0, 2 }
+	assert must_parse('p').specificity() == Specificity{0, 0, 1}
+	assert must_parse('*').specificity() == Specificity{0, 0, 0}
+	assert must_parse('.a').specificity() == Specificity{0, 1, 0}
+	assert must_parse('#a').specificity() == Specificity{1, 0, 0}
+	assert must_parse('[a]').specificity() == Specificity{0, 1, 0}
+	assert must_parse('p.a#b[c]').specificity() == Specificity{1, 2, 1}
+	assert must_parse('p::before').specificity() == Specificity{0, 0, 2}
+	assert must_parse('div p').specificity() == Specificity{0, 0, 2}
 }
 
 fn test_specificity_of_not_includes_its_argument() {
-	assert must_parse('p:not(.a)').specificity() == Specificity{ 0, 2, 1 }
+	assert must_parse('p:not(.a)').specificity() == Specificity{0, 2, 1}
 	// The negation is not free: `:not(#a)` is an id selector for cascade
 	// purposes and must outrank `.b`.
-	assert must_parse('p:not(#a)').specificity() == Specificity{ 1, 1, 1 }
+	assert must_parse('p:not(#a)').specificity() == Specificity{1, 1, 1}
 	notted := must_parse('p:not(#a)').specificity()
 	plain := must_parse('.b').specificity()
 	assert notted.cmp(plain) > 0
@@ -301,13 +301,13 @@ fn test_specificity_compares_lexicographically() {
 fn test_specificity_pack_distinguishes_triples() {
 	mut seen := map[u64]bool{}
 	triples := [
-		Specificity{ 0, 0, 0 },
-		Specificity{ 0, 0, 1 },
-		Specificity{ 0, 1, 0 },
-		Specificity{ 1, 0, 0 },
-		Specificity{ 0, 0, 65535 },
-		Specificity{ 0, 65535, 65535 },
-		Specificity{ 65535, 65535, 65535 },
+		Specificity{0, 0, 0},
+		Specificity{0, 0, 1},
+		Specificity{0, 1, 0},
+		Specificity{1, 0, 0},
+		Specificity{0, 0, 65535},
+		Specificity{0, 65535, 65535},
+		Specificity{65535, 65535, 65535},
 	]
 	for t in triples {
 		assert !seen[t.pack()]
@@ -318,8 +318,8 @@ fn test_specificity_pack_distinguishes_triples() {
 fn test_specificity_pack_caps_rather_than_wrapping() {
 	// Without a cap, a rule with 65536 type selectors would pack to the same
 	// number as one with none, and the cascade would merge them.
-	assert Specificity{ 0, 0, 70000 }.pack() == Specificity{ 0, 0, 65535 }.pack()
-	assert Specificity{ 70000, 0, 0 }.pack() != Specificity{ 0, 0, 0 }.pack()
+	assert Specificity{0, 0, 70000}.pack() == Specificity{0, 0, 65535}.pack()
+	assert Specificity{70000, 0, 0}.pack() != Specificity{0, 0, 0}.pack()
 }
 
 fn test_escapes_in_a_selector_are_resolved() {
@@ -337,10 +337,16 @@ fn test_persian_class_and_tag_names_parse() {
 }
 
 fn test_the_selectors_real_pages_use_all_parse() {
-	for src in ['body > div.container#main.wide > ul.menu > li.item > a[href^="https"]:hover',
-		'html body div p, html body div span', 'a:not([href]), a[href=""]',
-		'input[type=checkbox]:checked + label', 'table tr:nth-child(2n+1) td',
-		':root', 'p:first-child', '* + *'] {
+	for src in [
+		'body > div.container#main.wide > ul.menu > li.item > a[href^="https"]:hover',
+		'html body div p, html body div span',
+		'a:not([href]), a[href=""]',
+		'input[type=checkbox]:checked + label',
+		'table tr:nth-child(2n+1) td',
+		':root',
+		'p:first-child',
+		'* + *',
+	] {
 		assert parse(src) != none
 	}
 }

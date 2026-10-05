@@ -186,6 +186,7 @@ fn first(root &nhtml.Tag, name string) &nhtml.Tag {
 	}
 	return unsafe { nil }
 }
+
 fn test_a_newline_after_the_doctype_still_finds_the_document_element() {
 	// The bug this pins. `net/html` puts a text node above `html` when the source has
 	// anything but a tag there, and a file with a newline after the doctype -- which is

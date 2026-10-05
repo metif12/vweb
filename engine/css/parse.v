@@ -23,7 +23,7 @@ pub fn parse(src string) Stylesheet {
 struct Parser {
 mut:
 	toks []Token
-	i int
+	i    int
 }
 
 fn (p &Parser) peek() Token {
@@ -158,8 +158,8 @@ fn (mut p Parser) parse_at_rule(mut out []Rule) {
 	p.skip_one() // the `{`
 	if at_rule_holds_declarations(name) {
 		out << AtDeclarationRule{
-			name: name
-			prelude: prelude
+			name:         name
+			prelude:      prelude
 			declarations: p.parse_declaration_block()
 		}
 		return
@@ -281,6 +281,7 @@ fn (mut p Parser) skip_bad_declaration() {
 		}
 	}
 }
+
 // parse_declarations parses a bare declaration list: what is inside a rule block, or the
 // whole of a `style` attribute.
 //

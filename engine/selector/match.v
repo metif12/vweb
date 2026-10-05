@@ -31,7 +31,7 @@ pub struct State {
 pub:
 	hovered &html.Tag = unsafe { nil }
 	focused &html.Tag = unsafe { nil }
-	active &html.Tag = unsafe { nil }
+	active  &html.Tag = unsafe { nil }
 	visited map[string]bool
 }
 
@@ -148,7 +148,9 @@ pub fn (a AttrSelector) matches(el &html.Tag) bool {
 		.includes { contains_word(got, want) }
 		// `|=` matches the whole value or a value followed by a hyphen, which is
 		// what makes it right for language subtags like `en-GB`.
-		.dash_match { got == want || (got.len > want.len && got.starts_with(want) && got[want.len] == `-`) }
+		.dash_match {
+			got == want || (got.len > want.len && got.starts_with(want) && got[want.len] == `-`)
+		}
 		.prefix { got.starts_with(want) }
 		.suffix { got.ends_with(want) }
 		.substring { want != '' && got.contains(want) }
@@ -196,7 +198,9 @@ pub fn (p PseudoClass) matches(el &html.Tag, state &State) bool {
 		.last_child { tree.index_among_siblings(el) == tree.element_sibling_count(el) - 1 }
 		.only_child { tree.element_sibling_count(el) == 1 }
 		.first_of_type { tree.index_among_siblings_of_type(el) == 0 }
-		.last_of_type { tree.index_among_siblings_of_type(el) == tree.sibling_count_of_type(el) - 1 }
+		.last_of_type {
+			tree.index_among_siblings_of_type(el) == tree.sibling_count_of_type(el) - 1
+		}
 		.only_of_type { tree.sibling_count_of_type(el) == 1 }
 		// The three positional forms are one-based, as CSS defines them: `:nth-child(1)`
 		// is the first element, not the zeroth. Getting this wrong turns every
@@ -288,4 +292,3 @@ fn element_lang(el &html.Tag) string {
 		cur = tree.parent_element(cur) or { return '' }
 	}
 }
-

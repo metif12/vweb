@@ -260,6 +260,7 @@ fn test_an_unknown_property_is_not_supported() {
 	assert !supports_property('grid-template-columns')
 	assert !supports_property('box-shadow')
 }
+
 // --- inline style attributes -------------------------------------------------
 
 fn compute_with_inline(inline string, sheet string) Style {

@@ -102,14 +102,14 @@ fn reference_at(rest string, in_attribute bool) ?Reference {
 // hid the one test that mattered.
 
 // A name has to be in the table, exactly. This used to also walk the table looking for a
-	// longer name starting with this one, on the theory that `&notit;` should not decode as
-	// `&not` -- and then it read `replacements[name]` without ever checking that `name`
-	// was there. `&notit;` is not in the table, `replacements["notit"]` is the empty
-	// string, and seven bytes of the page disappeared.
+// longer name starting with this one, on the theory that `&notit;` should not decode as
+// `&not` -- and then it read `replacements[name]` without ever checking that `name`
+// was there. `&notit;` is not in the table, `replacements["notit"]` is the empty
+// string, and seven bytes of the page disappeared.
 //
 // The prefix rule turns out to be unnecessary: a name in the table is an exact match by
-	// definition, and a name not in the table fails the membership test whatever it is a
-	// prefix of.
+// definition, and a name not in the table fails the membership test whatever it is a
+// prefix of.
 fn named(rest string, in_attribute bool) ?Reference {
 	// `rest` starts at the `&`, so the name begins at 1. Starting the scan at 0 reads the
 	// `&` itself, which is not a name byte, and every named reference then comes back as
@@ -211,9 +211,38 @@ fn encode_code_point(code int) string {
 // c1_remap is the Windows-1252 reading of C1, which is what a numeric reference in the
 // 0x80-0x9F range actually means to the people writing it.
 const c1_remap = [
-	u32(0x20AC), 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160,
-	0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013,
-	0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+	u32(0x20AC),
+	0x81,
+	0x201A,
+	0x0192,
+	0x201E,
+	0x2026,
+	0x2020,
+	0x2021,
+	0x02C6,
+	0x2030,
+	0x0160,
+	0x2039,
+	0x0152,
+	0x8D,
+	0x017D,
+	0x8F,
+	0x90,
+	0x2018,
+	0x2019,
+	0x201C,
+	0x201D,
+	0x2022,
+	0x2013,
+	0x2014,
+	0x02DC,
+	0x2122,
+	0x0161,
+	0x203A,
+	0x0153,
+	0x9D,
+	0x017E,
+	0x0178,
 ]
 
 fn is_digit_or_hex(c u8) bool {
@@ -258,7 +287,7 @@ const replacements = {
 	'GT':     '>'
 	'quot':   '"'
 	'QUOT':   '"'
-	'apos':   '\''
+	'apos':   "'"
 	'nbsp':   '\u00A0'
 	'copy':   '\u00A9'
 	'reg':    '\u00AE'
@@ -347,46 +376,46 @@ const replacements = {
 
 // legacy_names is the set HTML5 allows to appear without a trailing semicolon.
 const legacy_names = {
-	'amp'
-	'AMP'
-	'lt'
-	'LT'
-	'gt'
-	'GT'
-	'quot'
-	'QUOT'
-	'nbsp'
-	'copy'
-	'reg'
-	'cent'
-	'pound'
-	'yen'
-	'curren'
-	'iexcl'
-	'iquest'
-	'brvbar'
-	'uml'
-	'sect'
-	'para'
-	'middot'
-	'laquo'
-	'raquo'
-	'times'
-	'divide'
-	'deg'
-	'plusmn'
-	'frac12'
-	'frac14'
-	'frac34'
-	'micro'
-	'not'
-	'shy'
-	'macr'
-	'sup1'
-	'sup2'
-	'sup3'
-	'acute'
-	'cedil'
-	'ordf'
-	'ordm'
+	'amp':    true
+	'AMP':    true
+	'lt':     true
+	'LT':     true
+	'gt':     true
+	'GT':     true
+	'quot':   true
+	'QUOT':   true
+	'nbsp':   true
+	'copy':   true
+	'reg':    true
+	'cent':   true
+	'pound':  true
+	'yen':    true
+	'curren': true
+	'iexcl':  true
+	'iquest': true
+	'brvbar': true
+	'uml':    true
+	'sect':   true
+	'para':   true
+	'middot': true
+	'laquo':  true
+	'raquo':  true
+	'times':  true
+	'divide': true
+	'deg':    true
+	'plusmn': true
+	'frac12': true
+	'frac14': true
+	'frac34': true
+	'micro':  true
+	'not':    true
+	'shy':    true
+	'macr':   true
+	'sup1':   true
+	'sup2':   true
+	'sup3':   true
+	'acute':  true
+	'cedil':  true
+	'ordf':   true
+	'ordm':   true
 }

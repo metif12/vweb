@@ -23,41 +23,41 @@ import engine.raster
 
 pub struct Style {
 pub mut:
-	display Display
-	color raster.Color
+	display          Display
+	color            raster.Color
 	background_color raster.Color
-	font_size Length
-	font_family string
-	font_weight FontWeight
-	font_style FontStyle
-	line_height Length
-	text_align TextAlign
-	text_decoration TextDecoration
-	white_space WhiteSpace
-	direction Direction
-	margin Edges
-	padding Edges
-	border_width Edges
-	border_color [4]raster.Color
-	border_style [4]BorderStyle
+	font_size        Length
+	font_family      string
+	font_weight      FontWeight
+	font_style       FontStyle
+	line_height      Length
+	text_align       TextAlign
+	text_decoration  TextDecoration
+	white_space      WhiteSpace
+	direction        Direction
+	margin           Edges
+	padding          Edges
+	border_width     Edges
+	border_color     [4]raster.Color
+	border_style     [4]BorderStyle
 	// width and height are `auto` unless the cascade says otherwise. The distinction
 	// is the whole of Phase 2: `auto` for a block means fill the containing block and
 	// `0` means nothing.
-	width Length
+	width  Length
 	height Length
 	// min_width and max_width exist now even though only Phase 2 reads them, because
 	// they have to be *in* the struct for the cascade to store them, and adding a
 	// field later means re-deciding where it goes.
-	min_width Length
-	min_height Length
-	max_width Length
-	max_height Length
-	list_style_type ListStyleType
+	min_width           Length
+	min_height          Length
+	max_width           Length
+	max_height          Length
+	list_style_type     ListStyleType
 	list_style_position ListStylePosition
-	vertical_align VerticalAlign
-	text_transform TextTransform
-	opacity f64
-	visibility Visibility
+	vertical_align      VerticalAlign
+	text_transform      TextTransform
+	opacity             f64
+	visibility          Visibility
 }
 
 pub enum Display {
@@ -175,10 +175,10 @@ pub enum Visibility {
 // and a named field per side would make the shorthand parser four times longer.
 pub struct Edges {
 pub mut:
-	top Length
-	right Length
+	top    Length
+	right  Length
 	bottom Length
-	left Length
+	left   Length
 }
 
 // initial is the computed style of the root element: everything at its initial
@@ -186,35 +186,35 @@ pub mut:
 // and the initial `font-size` is `medium`, which is 16px.
 pub fn initial() Style {
 	return Style{
-		display: .inline
-		color: raster.black
-		background_color: raster.transparent
-		font_size: Length{ value: 16.0, unit: .px }
-		font_family: 'serif'
-		font_weight: .normal
-		font_style: .normal
-		line_height: Length{ value: 0.0, unit: .none }
-		text_align: .start
-		text_decoration: .none
-		white_space: .normal
-		direction: .ltr
-		margin: Edges{}
-		padding: Edges{}
-		border_width: Edges{}
-		border_color: [raster.black, raster.black, raster.black, raster.black]
-		border_style: [.none, .none, .none, .none]
-		width: Length{ unit: .auto }
-		height: Length{ unit: .auto }
-		min_width: Length{ unit: .auto }
-		min_height: Length{ unit: .auto }
-		max_width: Length{ unit: .none }
-		max_height: Length{ unit: .none }
-		list_style_type: .disc
+		display:             .inline
+		color:               raster.black
+		background_color:    raster.transparent
+		font_size:           Length{ value: 16.0, unit: .px }
+		font_family:         'serif'
+		font_weight:         .normal
+		font_style:          .normal
+		line_height:         Length{ value: 0.0, unit: .none }
+		text_align:          .start
+		text_decoration:     .none
+		white_space:         .normal
+		direction:           .ltr
+		margin:              Edges{}
+		padding:             Edges{}
+		border_width:        Edges{}
+		border_color:        [raster.black, raster.black, raster.black, raster.black]
+		border_style:        [.none, .none, .none, .none]
+		width:               Length{ unit: .auto }
+		height:              Length{ unit: .auto }
+		min_width:           Length{ unit: .auto }
+		min_height:          Length{ unit: .auto }
+		max_width:           Length{ unit: .none }
+		max_height:          Length{ unit: .none }
+		list_style_type:     .disc
 		list_style_position: .outside
-		vertical_align: .baseline
-		text_transform: .none
-		opacity: 1.0
-		visibility: .visible
+		vertical_align:      .baseline
+		text_transform:      .none
+		opacity:             1.0
+		visibility:          .visible
 	}
 }
 
@@ -248,10 +248,9 @@ pub fn (mut s Style) inherit_from(parent &Style) {
 // const because the answer is a set of names and a set is not expressible as one
 // without allocating on every call.
 pub fn inherited_properties() []string {
-	return ['color', 'font-size', 'font-family', 'font-weight', 'font-style',
-		'line-height', 'text-align', 'text-decoration', 'white-space', 'direction',
-		'list-style-type', 'list-style-position', 'vertical-align', 'text-transform',
-		'visibility']
+	return ['color', 'font-size', 'font-family', 'font-weight', 'font-style', 'line-height',
+		'text-align', 'text-decoration', 'white-space', 'direction', 'list-style-type',
+		'list-style-position', 'vertical-align', 'text-transform', 'visibility']
 }
 
 // is_block_level reports whether this display value gets a box of its own in the
