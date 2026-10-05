@@ -104,7 +104,7 @@ pub fn (mut l Layouter) layout(root &html.Tag) &Box {
 
 	mut b := l.build(root, root_style, &ctx)
 	b.style.margin = style.Edges{}
-	l.place(mut b, l.viewport_width, 0, 0, false, false)
+	l.place(mut b, l.viewport_width, 0, 0, false)
 	return b
 }
 
@@ -185,24 +185,38 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 // element one anonymous block rather than one per line, so painting its background
 // would cover the whole containing block rather than the text; a highlighted span is
 // Phase 2's job, when there are line boxes to attach fragments to.
+// The same applies to margin and padding. A text run sits *inside* its parent element's
+// content box, so carrying the parent's margin onto it counts that margin twice: once on
+// the parent where `place` adds its own top margin, and again on the child where the
+// child's is added before placement. The box then ends up taller than its own content by
+// exactly one margin.
+//
+// The numbers, from one page: an `h1` with `border-bottom: 2px` and a 21px margin laid
+// out 57 tall around a 34 tall line box. 34 + 2 + 21 = 57, the 21 being the margin again.
+// So `border-bottom` painted at y=134 while the text ran to y=155, and the border struck
+// through the heading. Every box with a margin was wrong by the same amount: a `p` with
+// `margin: 1em 0` placed its text 32px below its own top edge instead of 16. The control
+// is the one box on the page with no margin set, `div.wide`, which showed no doubling at
+// all.
 fn text_style_of(parent style.Style) style.Style {
 	mut s := parent
 	s.background_color = raster.transparent
 	s.border_width = style.Edges{}
 	mut no_border := [4]style.BorderStyle{}
 	s.border_style = no_border
+	s.margin = style.Edges{}
+	s.padding = style.Edges{}
 	return s
 }
 
 // place lays a box out at a position, in place, and returns its border-box height.
 //
-// `top_escapes` and `bottom_escapes` say whether this box's margin may collapse with
-// the one outside it. The parent decides: a parent with a border or padding on that
-// side stops the collapse and one without lets the margin through. Passing it down is
-// what makes a `margin-top` on the first child move the *parent* down instead of
-// pushing the child down inside it, which is the visible difference when the parent
-// has a background.
-fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, top_escapes bool, bottom_escapes bool) int {
+// `y` is the top of this box's *margin box*: the caller has already advanced past the
+// collapsed top margin, because a collapsed margin is the caller's arithmetic to do and
+// two places doing it is how it got counted twice. `bottom_escapes` says whether this
+// box's bottom margin may collapse with the one below it, which decides whether the
+// caller subtracts it from the height it gets back.
+fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom_escapes bool) int {
 	s := b.style
 	ctx := l.context(b.font_size)
 	margin := edges_of(s.margin, &ctx, f64(containing_width))
@@ -214,10 +228,24 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, top_es
 	available := containing_width - margin.left - margin.right - frame
 	content_width := box_width(s.width, available, containing_width, &ctx)
 
-	// A collapsing top margin has already been accounted for by the parent, so the box
-	// starts at the border edge.
-	mut cursor := y + if top_escapes { 0 } else { margin.top } + border.top + padding.top
-	content_x := x + margin.left + border.left + padding.left
+	// The margin box starts at `y`: the caller has already advanced past this box's
+	// collapsed top margin, so the border box does too, and adding `margin.top` here as
+	// well counted it twice.
+	//
+	// The numbers, from the page this was found on. An `h1` with `margin: 0.67em` and one
+	// line of text: the caller advanced 21px for the margin, this added 21px more, and
+	// the content landed at y=92 inside a border box starting at y=71. The box was 36 tall
+	// and correct on paper -- 34 line plus 2 border -- but the text ran past its bottom,
+	// so `border-bottom` drew through the middle of the heading. Every box with a margin
+	// was short by one margin, and every one of them painted its background and borders
+	// over its predecessor: `.card`'s text overflowed its own background by 3px.
+	//
+	// Horizontally this is the opposite: margins do not collapse, the caller passes the
+	// same x to every child, and each box offsets itself by its own left margin. So
+	// `margin.left` is applied here and not there.
+	border_x := x + margin.left
+	content_x := border_x + border.left + padding.left
+	mut cursor := y + border.top + padding.top
 	content_y := cursor
 
 	mut previous_bottom := 0
@@ -240,7 +268,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, top_es
 		cursor += top
 		// Only an only-child box can collapse through to its parent's edge.
 		is_last := b.children.len == 1
-		cursor += l.place(mut child, content_width, content_x, cursor, first, is_last)
+		cursor += l.place(mut child, content_width, content_x, cursor, is_last)
 		previous_bottom = cm.bottom
 		first = false
 		i++
@@ -306,7 +334,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, top_es
 		border_height -= previous_bottom
 	}
 
-	b.rect = Rect{ x: x, y: y, width: content_width + frame, height: border_height }
+	b.rect = Rect{ x: border_x, y: y, width: content_width + frame, height: border_height }
 	// Assigned one side at a time because a braced array initializer with positional
 	// elements is a parse error in V 0.5.2 (see notes/V-GOTCHAS.md).
 	mut bw := [4]int{}

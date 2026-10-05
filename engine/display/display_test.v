@@ -127,7 +127,10 @@ fn test_width_subtracts_margin_border_and_padding() {
 	// The margin takes 10px off each side of the *border box*, and the border and
 	// padding then come out of what is left for the content.
 	assert d.rect.width == 800 - 2 * 10
-	assert d.rect.x == 0
+	// Which means the border box starts 10px in, not at the parent's edge. This used to
+	// assert 0 and passed, describing a box that overlaps its parent's left margin --
+	// and contradicting the sentence above it.
+	assert d.rect.x == 10
 	assert d.content.x == 10 + 2 + 5
 	assert d.content.width == 800 - 2 * (10 + 2 + 5)
 }
@@ -206,6 +209,44 @@ fn test_an_empty_block_is_still_one_line_tall() {
 	l := layouter('', 800)
 	b := l.layout(body)
 	assert box_for(b, 'a').rect.height == 20
+}
+
+fn test_an_elements_margin_is_not_also_counted_on_its_text() {
+	// The invariant that was broken, and it is worth stating as an invariant rather than
+	// as a number: an element's border box must be its content, its own padding and its
+	// own border, and nothing else. A `p { margin: 1em 0 }` is 20 tall around one line of
+	// text; it was 36, because the anonymous text box inherited the same margin and `place`
+	// added it a second time.
+	//
+	// The visible symptom was not the extra 16px of height. It was that `border-bottom`
+	// painted inside the last line of text, which is what made an `h1`'s heading look
+	// struck through.
+	mut body := el('body', '', '')
+	mut p := el('p', 'a', '')
+	attach(mut p, text_el('one line'))
+	attach(mut body, p)
+	l := layouter('p { margin: 8px 0; border-bottom: 2px solid red }', 800)
+	b := l.layout(body)
+	pa := box_for(b, 'a')
+	// 20 line + 2 border. The 8px margin is outside the box and must not reappear inside.
+	assert pa.rect.height == 22
+}
+
+fn test_a_margin_does_not_push_text_down_inside_its_own_element() {
+	// The same defect read from the other side, and this is the one that would have
+	// caught it without needing to know the expected height: the text box must start
+	// where the element's content box starts. `div.wide` on the page this was found on,
+	// with `margin: 8px 0` and no padding, put its text 32px below its own top edge.
+	mut body := el('body', '', '')
+	mut d := el('div', 'a', '')
+	attach(mut d, text_el('x'))
+	attach(mut body, d)
+	l := layouter('div { margin: 8px 0 }', 800)
+	b := l.layout(body)
+	da := box_for(b, 'a')
+	t := da.children[0]
+	assert t.content.y == da.content.y
+	assert da.content.height == 20
 }
 
 fn test_an_explicit_height_overrides_the_content() {
