@@ -253,6 +253,42 @@ fn test_min_width_auto_and_no_max_width_are_no_bounds() {
 	assert b.rect.width > 0
 }
 
+// --- min-height and max-height -----------------------------------------------
+
+fn test_min_height_holds_a_short_box_open() {
+	// The height-side twin of `test_min_width_holds_a_box_open`: one line of text is
+	// about 17 tall, and a floor of 150 has to win over it.
+	b := word_box('div { min-height: 150px }', 'abc', 800)
+	assert b.rect.height == 150
+	assert b.content.height == 150
+}
+
+fn test_max_height_caps_a_box_full_of_lines() {
+	// Enough text to lay out several lines naturally, then a ceiling that is well below
+	// what the text needs. The box is capped and the content is not clipped.
+	b := word_box('div { max-height: 40px }', 'aaa bbb ccc ddd eee fff ggg hhh iii', 60)
+	assert b.rect.height == 40
+	assert b.children[0].line_count > 1
+}
+
+fn test_min_height_beats_a_smaller_max_height() {
+	// The same inversion as the width case, and the reason the two clamps are written the
+	// same way: applying the max last would give 30, below the 90 floor that was asked
+	// for. Asserted as an inequality so a collapsed or negative height cannot pass.
+	b := word_box('div { min-height: 90px; max-height: 30px }', 'abc', 800)
+	assert b.rect.height == 90
+	assert b.content.height == 90
+}
+
+fn test_min_height_also_bounds_an_explicit_height() {
+	// With `height` set, the specified height is what gets clamped. This is the one place
+	// the rule differs from the content-box case above, and it is recorded here rather
+	// than left to be discovered: `box-sizing` is what will make the two agree.
+	b := word_box('div { height: 20px; min-height: 80px }', 'abc', 800)
+	assert b.rect.height == 80
+	assert word_box('div { height: 200px; max-height: 60px }', 'abc', 800).rect.height == 60
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {

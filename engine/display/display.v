@@ -482,6 +482,11 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		content_height = px(l.fonts.line_metrics(&fs).line_height)
 	}
 
+	// `min-height` and `max-height` bound the *content* box here, which is what CSS 2.1
+	// 10.7 says and is the same box `min-width`/`max-width` bound in `box_width`.
+	content_height = height_clamp(content_height, s.min_height, s.max_height, &ctx,
+		f64(containing_width))
+
 	mut border_height := content_height + padding.top + padding.bottom + border.top +
 		border.bottom
 
@@ -489,6 +494,13 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		// An explicit height overrides the content's, which is what `height: 200px` on a
 		// short paragraph means. The content is not clipped: overflow is Phase 3.
 		border_height = px(resolve(s.height, &ctx, f64(containing_width)))
+		// Clamped here as well, on the specified height rather than on the content.
+		// That is the one place the two disagree about which box they bound: the
+		// content-box rule applies above, but an explicit `height` is treated as the
+		// whole border box, so min/max are applied to it directly. Fixing that is
+		// `box-sizing`, which is the next item and which will make the two agree.
+		border_height = height_clamp(border_height, s.min_height, s.max_height, &ctx,
+			f64(containing_width))
 		b.content.height = max_of(content_height, 0)
 	} else if b.children.len > 0 && previous_bottom > 0 && (bottom_escapes
 		|| b.children.len == 1) {
@@ -559,6 +571,42 @@ fn draws_no_border(s style.BorderStyle) bool {
 //
 // `min-width: auto` and an unset `max-width` are both "no bound", and `auto` is
 // additionally "no bound" rather than "0", so it is not folded into the zero case.
+// height_clamp applies `min-height` and `max-height` to a content height.
+//
+// It is deliberately the same shape as the clamp inside `box_width` rather than a
+// shared helper, because the two clamp at different points: width is resolved before
+// any padding is added, and height is clamped to the content box before padding is
+// added to it. Folding them together would need a callback for where in the arithmetic
+// the bound applies, which is more machinery than two short functions justify.
+fn height_clamp(content_height int, min_h style.Length, max_h style.Length, ctx &style.Context,
+	basis f64) int {
+	mut lo := 0
+	if min_h.unit != .auto {
+		lo = px(resolve(min_h, ctx, basis))
+		if lo < 0 {
+			lo = 0
+		}
+	}
+	mut hi := -1
+	if max_h.unit != .none {
+		hi = px(resolve(max_h, ctx, basis))
+		if hi < 0 {
+			hi = -1
+		}
+	}
+	if hi >= 0 && hi < lo {
+		hi = lo
+	}
+	mut v := content_height
+	if v < lo {
+		v = lo
+	}
+	if hi >= 0 && v > hi {
+		v = hi
+	}
+	return max_of(v, 0)
+}
+
 fn box_width(w style.Length, min_w style.Length, max_w style.Length, available int,
 	containing_width int, ctx &style.Context) int {
 	mut v := match w.unit {
