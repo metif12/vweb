@@ -97,7 +97,7 @@ fn layouter(src string, width int) &Layouter {
 // line-height, which no correct implementation can satisfy.
 fn layouter_normal(src string, width int) &Layouter {
 	return &Layouter{
-		engine: style.new_engine([style.Sheet{
+		engine:          style.new_engine([style.Sheet{
 			style:  css.parse(css.user_agent_css + reset + 'line-height: normal; ' + ' } ' + src)
 			origin: style.Origin.author
 		}])
