@@ -159,10 +159,13 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 	// block's inline content is one continuous stream of text that line boxes break; making
 	// each run its own block made every run its own line.
 	//
-	// What this costs is per-run styling: the accumulated text takes the block's font, so
-	// `<span style="font-size:28px">` inside a paragraph is now the paragraph's size. That
-	// is the next step, not this one, and it is a better trade than the right text on the
-	// wrong lines.
+	// What this cost, and what later fixed: the accumulated runs all took the block's font,
+	// so `<span style="font-size:28px">` in a paragraph rendered at 16px. Stage B gave each
+	// run its own style and its own resolved font size, and this comment is the record of
+	// which half of that was obvious. Colour, weight and italic needed nothing at all --
+	// they travel in `style`, and `style` was always the element's own. Only `font-size`
+	// was wrong, because it was the one property travelling as a number alongside the style
+	// rather than inside it.
 	mut pending := []InlineRun{}
 	for child in el.children {
 		if tree.is_text(child) {
