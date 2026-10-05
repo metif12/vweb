@@ -846,3 +846,52 @@ fn test_wrapping_after_a_bold_run_keeps_every_glyph() {
 	}
 	assert missing == 0
 }
+// --- the glyph cache, on its own ----------------------------------------------
+
+// The cache round-trip is the fork in the open bug: every cache hit has been coming
+// back with an empty bitmap, and either the cache is losing the value or the caller is
+// throwing it away. These two tests say which.
+
+fn test_the_cache_returns_what_was_put_into_it() {
+	mut lib := new_font_library()
+	mut style := FontStyle{ family: 'sans-serif', size: 16.0 }
+	fid := lib.primary_id(&style)
+	assert fid >= 0
+	f := lib.font(fid) or { panic('no font') }
+	gid := int(f.glyph_index(`m`))
+	bm := f.rasterize(u16(gid), 16.0, 0, 0)
+	assert bm.width > 0
+
+	mut gc := new_glyph_cache()
+	k := GlyphKey{ font_id: fid, gid: gid, size_q: quantise_size(16.0), sub_x: 0, sub_y: 0 }
+	gc.put(k, bm)
+	assert gc.len() == 1
+
+	got := gc.get(k) or {
+		assert false, 'the cache missed a key it holds'
+		return
+	}
+	// The width is the assertion. A cache that returns the zero bitmap for a key it
+	// holds is indistinguishable, from the outside, from a cache that stores nothing.
+	assert got.width == bm.width
+	assert got.height == bm.height
+}
+
+fn test_the_cache_stores_one_entry_per_distinct_key() {
+	// Ten glyphs over four quarter-pixel offsets is four keys, not ten. If the count came
+	// out as ten, two glyphs were sharing a key and one of them was being drawn with the
+	// other's ink.
+	mut lib := new_font_library()
+	mut style := FontStyle{ family: 'sans-serif', size: 16.0 }
+	fid := lib.primary_id(&style)
+	f := lib.font(fid) or { panic('no font') }
+	gid := int(f.glyph_index(`m`))
+	mut gc := new_glyph_cache()
+	for sub in [0, 1, 2, 3, 0, 1, 2, 3, 0, 1] {
+		bm := f.rasterize(u16(gid), 16.0, sub, 0)
+		gc.put(GlyphKey{ font_id: fid, gid: gid, size_q: quantise_size(16.0), sub_x: sub,
+			sub_y: 0 }, bm)
+	}
+	assert gc.len() == 4
+	assert gc.unpackable() == 0
+}

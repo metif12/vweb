@@ -169,15 +169,33 @@ pub fn new_glyph_cache() &GlyphCache {
 	}
 }
 
+// get returns the bitmap stored under a key, or none.
+//
+// The stored value is bound to a local and returned explicitly. It used to be written as
+// the map lookup with an `or` block and nothing after it but the counter:
+//
+//	gc.entries[p] or { gc.misses++; return none }
+//	gc.hits++
+//
+// which returns the *counter's* value, not the bitmap. V accepted it, and the signature
+// said `?vtext.GlyphBitmap`, so nothing complained -- but every hit came back as the zero
+// bitmap and drew nothing.
+//
+// That is the whole of the "empty bitmap" bug this module had for a day: a page rendered
+// with holes in it, roughly half its glyphs missing, worse for narrow glyphs because a
+// narrow one is more likely to be a repeat. It was read here, as a cache miss followed by a
+// bad rasterize, and in the rasterizer, which is correct. `notes/JOURNAL.md` has the
+// measurements.
 pub fn (mut gc GlyphCache) get(k GlyphKey) ?vtext.GlyphBitmap {
 	p := pack_glyph_key(k) or {
 		return none
 	}
-	gc.entries[p] or {
+	got := gc.entries[p] or {
 		gc.misses++
 		return none
 	}
 	gc.hits++
+	return got
 }
 
 // put stores a bitmap. A zero-area bitmap is not stored: vtext returns one for
