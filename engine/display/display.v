@@ -447,10 +447,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	}
 
 	if b.text != '' {
-		mut fs := font_style_of(s, b.font_size, &ctx)
-		m := l.fonts.line_metrics(&fs)
-		lines := l.layout_runs(mut b, &ctx, content_x,
-			baseline_of(cursor, m.ascent, m.descent, f64(px(m.line_height))), content_width)
+		lines := l.layout_runs(mut b, &ctx, content_x, content_y, content_width)
 		b.line_count = lines.len
 		// One flat list rather than a list per line: paint draws glyphs, not lines, and
 		// a caller asking "where is the text of this box" wants every glyph in one
@@ -727,10 +724,12 @@ struct Atom {
 // simplification: a `<span style="font-size:28px">` in a 16px paragraph overlaps its
 // neighbours rather than pushing them apart. Half-leading to the tallest item is the
 // correct rule and is recorded in PHASES.md as part of this step.
-fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int,
-	first_baseline int, content_width int) []LaidLine {
-	mut fs := font_style_of(b.style, b.font_size, ctx)
-	line_height := px(l.fonts.line_metrics(&fs).line_height)
+// `content_y` rather than a baseline passed in: each line's height now depends on the fonts
+// on that line, so `place` cannot say where the first baseline goes without first knowing
+// how tall the first line is. It used to pass one computed from the *box's* metrics, and
+// that is why a 28px run in a 16px paragraph overlapped its neighbours.
+fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, content_y int,
+	content_width int) []LaidLine {
 	max_w := wrap_width(b.style.white_space, content_width)
 
 	// Atoms first, across every run, so a break can land on a run boundary as easily as on
@@ -774,9 +773,27 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int,
 
 	// Shape each line. Consecutive atoms of the same run are shaped as one string, so a
 	// word spanning two atoms still joins and shapes as a word.
+	// Half-leading, CSS 2.1 10.8.1: each item's leading is split half above and half below
+	// its own text, so a line box is as tall as the tallest item on it plus that item's
+	// half-leading. `line_has_run` keeps a 28px run on the second line from inflating the
+	// first.
 	mut out := []LaidLine{cap: lines.len}
-	for li, line_atoms in lines {
-		baseline := f64(first_baseline + li * line_height)
+	mut y := content_y
+	for line_atoms in lines {
+		mut above := 0.0
+		mut below := 0.0
+		for ri in 0 .. b.runs.len {
+			if !line_has_run(line_atoms, ri) {
+				continue
+			}
+			rs := font_style_of(b.runs[ri].style, b.runs[ri].font_size, ctx)
+			m := l.fonts.line_metrics(&rs)
+			half := (m.line_height - (m.ascent + m.descent)) / 2.0
+			above = fmax(above, m.ascent + half)
+			below = fmax(below, m.descent + half)
+		}
+		line_height := px(above + below)
+		baseline := f64(y) + above
 		mut x := f64(content_x)
 		mut glyphs := []text.PositionedGlyph{}
 		mut i := 0
@@ -802,8 +819,30 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int,
 			width:  x - f64(content_x)
 			height: line_height
 		}
+		y += line_height
 	}
 	return out
+}
+
+// line_has_run reports whether any atom on the line came from run `ri`. A line's height
+// depends on the fonts that actually appear on it, not on every font in the box: a 28px run
+// on the second line must not make the first one tall.
+
+fn line_has_run(atoms []Atom, ri int) bool {
+	for a in atoms {
+		if a.run == ri {
+			return true
+		}
+	}
+	return false
+}
+
+fn fmax(a f64, b f64) f64 {
+	return if a > b {
+		a
+	} else {
+		b
+	}
 }
 
 // tokenize_inline splits a run's text into words and runs of spaces.
