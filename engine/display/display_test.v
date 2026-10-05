@@ -86,6 +86,110 @@ fn layouter(src string, width int) &Layouter {
 	}
 }
 
+// A layouter whose line-height is `normal` instead of the fixed `20px` that
+// `layouter` above forces onto `*`, so a line's height tracks the fonts on it.
+//
+// The two are not interchangeable, and the difference is what these tests exist to
+// pin down. A *pixel* line-height is a length and does not scale with font size, so
+// under `layouter` a 28px run correctly sits in a 20px line box -- every height here
+// is 20 whatever the font size. That is right, and three earlier versions of these
+// tests were wrong about it: they asserted `big > plain` under a fixed 20px
+// line-height, which no correct implementation can satisfy.
+fn layouter_normal(src string, width int) &Layouter {
+	return &Layouter{
+		engine: style.new_engine([style.Sheet{
+			style:  css.parse(css.user_agent_css + reset + 'line-height: normal; ' + ' } ' + src)
+			origin: style.Origin.author
+		}])
+		state:           &selector.State{}
+		fonts:           text.new_font_library()
+		viewport_width:  width
+		viewport_height: 800
+	}
+}
+
+// --- line heights come from the fonts on them --------------------------------
+
+// Each test compares two numbers that must differ, and the first carries an explicit
+// `assert tall > short` so that if they ever match it goes red instead of passing
+// vacuously. The first version of this compared against `short + tall` while both
+// were the same number, so it passed with half-leading entirely absent.
+fn span_box(sheet string, width int, plain string, inner string, fixed bool) &Box {
+	mut l := if fixed {
+		layouter(sheet, width)
+	} else {
+		layouter_normal(sheet, width)
+	}
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 'i', '')
+	attach(mut span, text_el(inner))
+	attach(mut div, text_el(plain), span)
+	attach(mut body, div)
+	return box_for(l.layout(body), 'd').children[0]
+}
+
+fn plain_box(sheet string, width int, content string, fixed bool) &Box {
+	mut l := if fixed {
+		layouter(sheet, width)
+	} else {
+		layouter_normal(sheet, width)
+	}
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut div, text_el(content))
+	attach(mut body, div)
+	return box_for(l.layout(body), 'd').children[0]
+}
+
+fn test_a_larger_run_makes_its_line_taller() {
+	// With `line-height: normal` a 28px run must make its line taller, or the two
+	// sizes are drawn on top of each other. Before the fix both were 17.
+	short := plain_box('', 800, 'abc', false).rect.height
+	tall := span_box('span { font-size: 28px }', 800, '', 'abc', false)
+	assert tall.rect.height > short
+	assert tall.runs[0].font_size == 28.0
+	assert tall.glyphs[0].size == 28.0
+}
+
+fn test_a_tall_run_only_heights_the_line_it_is_on() {
+	// The discriminating measurement. If a line took its height from every font in
+	// the box rather than the ones on it, the first line would be tall too and the
+	// box would be two tall lines instead of one short and one tall.
+	short := plain_box('', 800, 'abc', false).rect.height
+	one := span_box('span { font-size: 28px }', 800, '', 'abc', false)
+	assert one.rect.height > short
+	m := span_box('span { font-size: 28px }', 60, 'aaa ', 'ccc', false)
+	assert m.line_count == 2
+	assert m.rect.height == short + one.rect.height
+}
+
+fn test_two_lines_both_carrying_the_run_are_both_tall() {
+	// The other side of the same rule, and the case that would fail if `line_has_run`
+	// were inverted or dropped: here the big run is on both lines.
+	short := plain_box('', 800, 'abc', false).rect.height
+	one := span_box('span { font-size: 28px }', 800, '', 'abc', false)
+	assert one.rect.height > short
+	both := span_box('span { font-size: 28px }', 60, '', 'aaa ccc', false)
+	assert both.line_count == 2
+	assert both.rect.height == 2 * one.rect.height
+	// And the box in the previous test, which has the run on one line only, is strictly
+	// shorter. Without this, that test could still pass on half-leading that inflates
+	// every line regardless of what is on it.
+	assert both.rect.height > short + one.rect.height
+}
+
+fn test_a_fixed_pixel_line_height_does_not_grow_with_the_font() {
+	// The behaviour the three tests above got wrong, kept deliberately so it cannot be
+	// got wrong again. `layouter` forces `line-height: 20px` onto every element, and a
+	// pixel line-height is a length: it does not scale with font size. So under it a
+	// 28px run is *supposed* to sit in a 20px line box, and both heights are equal.
+	short := plain_box('', 800, 'abc', true).rect.height
+	big := span_box('span { font-size: 28px }', 800, '', 'abc', true)
+	assert big.rect.height == short
+	assert big.glyphs[0].size == 28.0
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {
