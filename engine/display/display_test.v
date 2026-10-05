@@ -190,6 +190,69 @@ fn test_a_fixed_pixel_line_height_does_not_grow_with_the_font() {
 	assert big.glyphs[0].size == 28.0
 }
 
+// --- min-width and max-width (docs/PHASES.md cases 1, 2 and 8) ---------------
+
+// A div whose only content is one word, laid out in `width`, returning the border box's
+// width. `content` is what the box would otherwise shrink to, which is what makes case 1
+// observable: without a floor the word is truncated or wrapped, with one it is not.
+fn word_box(sheet string, word string, available int) &Box {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	attach(mut div, text_el(word))
+	attach(mut body, div)
+	mut l := layouter(sheet, available)
+	return box_for(l.layout(body), 'd')
+}
+
+fn test_a_long_word_overflows_rather_than_shrinking() {
+	// Case 1. The word is far wider than the space, so the box stays at the width it was
+	// given and the text runs past it. Asserting on the box width rather than on the text
+	// is deliberate: an overflow is not a shrink, and the shrink is what would be wrong.
+	b := word_box('div { width: 40px }', 'incomprehensibilities', 800)
+	assert b.rect.width == 40
+	// The text is not broken up to fit: it stays on one line and runs past the box. The
+	// width the glyphs occupy is deliberately not asserted, because the anonymous box
+	// fills its parent by definition -- its `rect.width` is 40 whether the word fits or
+	// not, so measuring it here would have passed either way.
+	assert b.children[0].line_count == 1
+}
+
+fn test_min_width_holds_a_box_open() {
+	// Case 2's shape, without flexbox: a floor below the requested width. This is the
+	// rule that keeps a long word from being crushed by a narrow parent.
+	b := word_box('div { width: 40px; min-width: 200px }', 'abc', 800)
+	assert b.rect.width == 200
+}
+
+fn test_max_width_caps_a_box_that_would_otherwise_fill() {
+	b := word_box('div { max-width: 120px }', 'abc', 800)
+	assert b.rect.width == 120
+	// And the floor still applies when both are present and do not conflict.
+	assert word_box('div { width: 500px; min-width: 60px; max-width: 120px }',
+		'abc', 800).rect.width == 120
+}
+
+fn test_min_width_beats_a_smaller_max_width() {
+	// Case 8. With `min-width: 200px; max-width: 100px` the two conflict, and applying
+	// the max last gives 100 -- a box smaller than the floor that was asked for, and
+	// smaller than its own min-content. The min wins, so the result is 200 and cannot
+	// invert. Asserted as an inequality and not as one number so that a negative or
+	// collapsed width cannot pass.
+	b := word_box('div { width: 50px; min-width: 200px; max-width: 100px }', 'abc', 800)
+	assert b.rect.width == 200
+	// No padding or border here, so the content box is the border box. If the clamp had
+	// inverted, the two would disagree.
+	assert b.content.width == b.rect.width
+}
+
+fn test_min_width_auto_and_no_max_width_are_no_bounds() {
+	// The two defaults must not behave like 0 and must not clamp anything: `auto` on
+	// min-width means "no floor", not "floor of zero", and an unset max-width is not a
+	// ceiling of zero either.
+	b := word_box('div { min-width: auto; max-width: none }', 'abc', 800)
+	assert b.rect.width > 0
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {

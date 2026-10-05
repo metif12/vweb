@@ -398,7 +398,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 
 	frame := border.left + border.right + padding.left + padding.right
 	available := containing_width - margin.left - margin.right - frame
-	content_width := box_width(s.width, available, containing_width, &ctx)
+	content_width := box_width(s.width, s.min_width, s.max_width, available, containing_width, &ctx)
 
 	// The margin box starts at `y`: the caller has already advanced past this box's
 	// collapsed top margin, so the border box does too, and adding `margin.top` here as
@@ -544,7 +544,23 @@ fn draws_no_border(s style.BorderStyle) bool {
 // neither is clamped to what is left, because CSS 2.1 10.4 says a box wider than its
 // containing block overflows it. That is the whole reason `width: 100%` plus padding
 // hangs over the edge: the padding is added to the 100%, not taken out of it.
-fn box_width(w style.Length, available int, containing_width int, ctx &style.Context) int {
+// box_width resolves `width` and then clamps it, which is three separate rules that
+// have to happen in this order (CSS 2.1 10.4):
+//
+//	1. resolve `width` against the containing block,
+//	2. let `min-width` beat `max-width` when the two conflict,
+//	3. clamp `width` into `[min-width, max-width]`.
+//
+// Step 2 is not optional and not cosmetic. With `min-width: 200px; max-width: 100px`
+// the two rules applied in the other order give 100, which is *below* the floor the
+// author asked for, and a box can then be smaller than its own min-content. Applying
+// the max first and raising it to the min is what makes the result unable to invert,
+// which is what the eighth acceptance case in `docs/PHASES.md` asks for.
+//
+// `min-width: auto` and an unset `max-width` are both "no bound", and `auto` is
+// additionally "no bound" rather than "0", so it is not folded into the zero case.
+fn box_width(w style.Length, min_w style.Length, max_w style.Length, available int,
+	containing_width int, ctx &style.Context) int {
 	mut v := match w.unit {
 		.auto, .none {
 			if available < 0 {
@@ -555,6 +571,31 @@ fn box_width(w style.Length, available int, containing_width int, ctx &style.Con
 		}
 		.percent { px(w.value * f64(containing_width) / 100.0) }
 		else { px(resolve(w, ctx, f64(containing_width))) }
+	}
+	// A negative length is not a width. `max-width: -20px` must not become a floor
+	// above `min-width` either, so both are floored before they are compared.
+	mut lo := 0
+	if min_w.unit != .auto {
+		lo = px(resolve(min_w, ctx, f64(containing_width)))
+		if lo < 0 {
+			lo = 0
+		}
+	}
+	mut hi := -1
+	if max_w.unit != .none {
+		hi = px(resolve(max_w, ctx, f64(containing_width)))
+		if hi < 0 {
+			hi = -1
+		}
+	}
+	if hi >= 0 && hi < lo {
+		hi = lo
+	}
+	if v < lo {
+		v = lo
+	}
+	if hi >= 0 && v > hi {
+		v = hi
 	}
 	if v < 0 {
 		v = 0
