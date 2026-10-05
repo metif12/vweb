@@ -245,7 +245,6 @@ const c1_remap = [
 	0x0178,
 ]
 
-
 fn digit_value(c u8) int {
 	if c >= `0` && c <= `9` {
 		return int(c - `0`)
