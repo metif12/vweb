@@ -692,19 +692,6 @@ fn wrap_width(ws style.WhiteSpace, content_width int) f64 {
 	return f64(content_width)
 }
 
-// baseline_of is the y of a line's baseline, from the top of its line box.
-//
-// CSS 2.1 10.8.1: the space a line box leaves for text is split evenly above and below
-// it, so the baseline sits at half the leading plus the ascent. Putting the baseline at
-// the ascent instead -- the obvious thing -- leaves all the leading below the text, so
-// every line sits high in its box and consecutive lines look like they are drifting
-// apart. With a line height smaller than the font's own, the leading is negative and the
-// text is centred on the line, which is also what this produces.
-fn baseline_of(top int, ascent f64, descent f64, line_height f64) int {
-	leading := line_height - (ascent + descent)
-	return px(f64(top) + leading / 2.0 + ascent)
-}
-
 fn resolve(l style.Length, ctx &style.Context, basis f64) f64 {
 	return l.to_px_or(ctx, basis)
 }

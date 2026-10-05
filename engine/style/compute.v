@@ -1,6 +1,5 @@
 module style
 
-import engine.raster
 import strconv
 import strings
 
