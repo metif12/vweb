@@ -338,6 +338,78 @@ fn test_box_sizing_does_not_shrink_an_auto_width_twice() {
 	assert b.content.width == 260
 }
 
+// --- intrinsic sizes (docs/PHASES.md, min-content / max-content) ------------
+
+fn test_max_content_is_the_text_on_one_line() {
+	// `max-content` is the width with nothing wrapping, which for text is every word
+	// laid end to end. Asserted as an inequality rather than a number, because the exact
+	// width follows the font and the point is the *relation* to the other sizes.
+	b := word_box('div { width: 400px }', 'aa bb cc', 800)
+	one := word_box('div { width: 400px }', 'aa bb cc dd', 800)
+	assert one.max_content_width > b.max_content_width
+	// The box is laid out at its specified 400, not at its max-content: the two are
+	// independent measurements and conflating them is the mistake this test exists to catch.
+	assert b.rect.width == 400
+	assert b.min_content_width < b.max_content_width
+}
+
+fn test_min_content_is_the_widest_single_word() {
+	// A line may break between words but never inside one, so min-content is the width of
+	// the longest word -- not the sum, and not the width of the longest *line* after
+	// breaking. A one-word box is the degenerate case where the two must agree.
+	many := word_box('div { width: 400px }', 'aa bbbbbbbbbb cc', 800)
+	one := word_box('div { width: 400px }', 'bbbbbbbbbb', 800)
+	assert many.min_content_width == one.min_content_width
+	assert many.min_content_width < many.max_content_width
+}
+
+fn test_min_content_can_exceed_the_width_a_box_asked_for() {
+	// Acceptance case 8 is about the clamp, and `test_min_width_beats_a_smaller_max_width`
+	// covers it. What is worth asserting on the measurements is the case that produces it:
+	// an unbreakable word whose min-content is larger than the width the box was given.
+	//
+	// Note that min-content and max-content are equal here, and correctly so: a box holding
+	// a single unbreakable word has nothing to break, so both measurements are that word's
+	// width. An earlier version of this test asserted `min > max` and was wrong -- a
+	// measurement clamped into its opposite number would be the actual defect.
+	b := word_box('div { width: 60px }', 'supercalifragilistic', 800)
+	assert b.min_content_width > 0
+	assert b.max_content_width > 0
+	assert b.min_content_width <= b.max_content_width
+	// The word does not fit in 60, so min-content says so, and the box still stays at the
+	// 60 it was asked for rather than collapsing or going negative.
+	assert b.min_content_width > b.rect.width
+	assert b.rect.width == 60
+}
+
+fn test_a_parent_is_as_wide_as_its_widest_child() {
+	// Intrinsic sizes propagate, which is what makes them usable for stretch-to-fit and
+	// for an atomic inline-level box later. A parent containing one child inherits that
+	// child's measurements plus its own frame.
+	mut body := el('body', '', '')
+	mut outer := el('div', 'outer', '')
+	mut inner := el('div', 'inner', '')
+	attach(mut inner, text_el('aa bbbbbbbb cc'))
+	attach(mut outer, inner)
+	attach(mut body, outer)
+	mut l := layouter('', 800)
+	root := l.layout(body)
+	o := box_for(root, 'outer')
+	i := box_for(root, 'inner')
+	assert o.min_content_width == i.min_content_width
+	assert o.max_content_width == i.max_content_width
+}
+
+fn test_a_box_with_padding_is_wider_intrinsically_than_one_without() {
+	// The frame is part of the intrinsic size, not something subtracted afterwards. A
+	// parent sizing itself to its content has to reserve the padding too, or the content
+	// overflows the moment it takes that size.
+	padded := word_box('div { padding: 0 20px }', 'aa bb cc', 800)
+	plain := word_box('div { width: 400px }', 'aa bb cc', 800)
+	assert padded.max_content_width - plain.max_content_width == 40
+	assert padded.min_content_width > plain.min_content_width
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {

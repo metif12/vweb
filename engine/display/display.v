@@ -89,8 +89,18 @@ pub mut:
 	// the line height, so it is not stored: a second number that has to agree with the
 	// first is a second thing to get wrong.
 	line_count int
-	children   []&Box
-	element    &html.Tag = unsafe { nil }
+	// Intrinsic widths (CSS Sizing 3). `max_content_width` is how wide the content would
+	// be with nothing wrapping it; `min_content_width` is how narrow it can get without
+	// something overflowing, which for text is its widest single word.
+	//
+	// They are on the box rather than returned by a function because layout needs them
+	// after placement -- a parent's intrinsic size is the widest child's, so the child has
+	// to have measured itself first. A `width()` call would have to re-walk the subtree at
+	// every level, once per level.
+	max_content_width int
+	min_content_width int
+	children          []&Box
+	element           &html.Tag = unsafe { nil }
 	// is_anonymous marks a box with no element of its own -- the block an inline
 	// element's text was collected into. Paint needs to know, because an anonymous box
 	// has no background of its own to draw.
@@ -480,6 +490,34 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		b.content = Rect{ x: content_x, y: content_y, width: content_width }
 	}
 
+	// A box whose content is child boxes is as wide as its widest child, by intrinsic
+	// size, plus that child's margins. Done here rather than inside the child loop above
+	// because it needs each child's own measurement, which that child only has once it has
+	// been placed.
+	//
+	// Collapsed margins are summed rather than collapsed, so a parent with two children
+	// whose vertical margins collapse reports a slightly larger min-content than a browser
+	// would. That is the safe direction: an over-estimate keeps a box wide, while an
+	// under-estimate clips content.
+	mut child_max := 0
+	mut child_min := 0
+	for c in b.children {
+		cctx := l.context(c.font_size)
+		ce := edges_of(c.style.margin, &cctx, f64(content_width))
+		w := c.max_content_width + ce.left + ce.right
+		if w > child_max {
+			child_max = w
+		}
+		n := c.min_content_width + ce.left + ce.right
+		if n > child_min {
+			child_min = n
+		}
+	}
+	if b.children.len > 0 {
+		b.max_content_width = child_max + frame
+		b.min_content_width = child_min + frame
+	}
+
 	mut content_height := max_of(cursor - content_y, 0)
 	// A box with no content at all -- `display: block` on an empty div with a set
 	// height aside -- would otherwise be zero tall.
@@ -850,6 +888,24 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 	if atoms.len == 0 {
 		return []LaidLine{}
 	}
+
+	// Intrinsic widths, measured before anything breaks a line, because after breaking they
+	// cannot be recovered: `lines` has already folded the atoms into the widths it needed.
+	//
+	// Max-content is every atom on one line. Min-content is the widest single unbreakable
+	// word, because a line may break between words but never inside one -- so that word is
+	// the narrowest a line can be without the text overflowing it. Spaces are excluded,
+	// since a trailing space is dropped rather than allowed to set the minimum.
+	mut mx := 0.0
+	mut mn := 0.0
+	for a in atoms {
+		mx += a.width
+		if !a.space && a.width > mn {
+			mn = a.width
+		}
+	}
+	b.max_content_width = px(mx)
+	b.min_content_width = px(mn)
 
 	// Greedy fill. A space never starts a line and never causes one, so the break is taken
 	// before the word that would not fit rather than after the space before it.
