@@ -465,6 +465,71 @@ fn test_an_auto_width_fills_the_space_available() {
 	assert word_box('div { width: 50% }', 'aa bb cc', 800).rect.width == 400
 }
 
+// --- inline-block as an atomic box ------------------------------------------
+
+fn inline_block_div(sheet string) &Box {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 'ib', '')
+	attach(mut span, text_el('X'))
+	attach(mut div, text_el('a'), span, text_el('b'))
+	attach(mut body, div)
+	mut l := layouter(sheet, 800)
+	return box_for(l.layout(body), 'd')
+}
+
+fn test_an_inline_block_shares_a_line_with_the_text_around_it() {
+	d := inline_block_div('span { display: inline-block; width: 20px }')
+	assert d.children.len == 1
+	assert d.children[0].line_count == 1
+	assert d.children[0].atomics.len == 1
+	assert d.children[0].text == 'a b'
+}
+
+fn test_an_inline_block_is_never_broken() {
+	d := inline_block_div('span { display: inline-block; width: 900px }')
+	assert d.children[0].atomics.len == 1
+	assert d.children[0].atomics[0].rect.width == 900
+}
+
+fn test_an_inline_block_is_laid_out_as_a_box() {
+	d := inline_block_div('span { display: inline-block; width: 30px; height: 25px }')
+	assert d.children[0].atomics[0].rect.width == 30
+	assert d.children[0].atomics[0].rect.height == 25
+}
+
+// --- acceptance case 5: margin auto ----------------------------------------
+
+fn test_auto_margins_centre_a_box_with_a_definite_width() {
+	b := word_box('div { width: 200px; margin: 0 auto }', 'abc', 800)
+	assert b.rect.width == 200
+	assert b.rect.x == 300
+	m := word_box('div { width: 200px; margin: 0 50px 0 auto }', 'abc', 800)
+	assert m.rect.x == 550
+}
+
+fn test_an_auto_width_is_not_centred() {
+	b := word_box('div { margin: 0 auto }', 'abc', 800)
+	assert b.rect.x == 0
+	assert b.rect.width == 800
+}
+
+fn test_an_explicit_zero_margin_is_not_centred() {
+	b := word_box('div { width: 300px; margin: 0 }', 'abc', 800)
+	assert b.rect.x == 0
+}
+
+fn test_the_longhand_auto_margin_centres() {
+	// The longhand form, to separate the shorthand expansion from the centring rule.
+	b := word_box('div { width: 200px; margin-left: auto; margin-right: auto }', 'abc', 800)
+	assert b.rect.x == 300
+}
+
+fn test_the_one_value_auto_shorthand_centres() {
+	b := word_box('div { width: 200px; margin: auto }', 'abc', 800)
+	assert b.rect.x == 300
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {

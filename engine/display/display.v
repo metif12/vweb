@@ -122,8 +122,8 @@ pub mut:
 	atomics []&Box
 	// inline_items is the inline content in source order, text and atomics interleaved.
 	// 
-	// runs` and `atomics are the same content split by type -- which is what shaping and
-	// the tests each want -- but only this list knows the order between them.
+	// 
+	// `runs` and `atomics` are the same content split by type -- which is what shaping and
 	inline_items []InlineItem
 	element      &html.Tag = unsafe { nil }
 	// is_anonymous marks a box with no element of its own -- the block an inline
@@ -473,7 +473,7 @@ fn text_style_of(parent style.Style) style.Style {
 fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom_escapes bool) int {
 	s := b.style
 	ctx := l.context(b.font_size)
-	margin := edges_of(s.margin, &ctx, f64(containing_width))
+	mut margin := edges_of(s.margin, &ctx, f64(containing_width))
 	border := zero_width_sides(mut edges_of(s.border_width, &ctx, f64(containing_width)),
 		s.border_style)
 	padding := edges_of(s.padding, &ctx, f64(containing_width))
@@ -503,7 +503,27 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	// Horizontally this is the opposite: margins do not collapse, the caller passes the
 	// same x to every child, and each box offsets itself by its own left margin. So
 	// `margin.left` is applied here and not there.
-	border_x := x + margin.left
+	mut border_x := x + margin.left
+	// Horizontal auto margins, CSS 2.1 10.3.2. With both sides `auto` and a width that is
+	// not itself `auto`, the space left over is split between them, which is what centres
+	// `<div style="width:200px; margin:0 auto">`. With only one side `auto`, that side
+	// absorbs all the leftover space.
+	//
+	// The width has to be *definite*: a `width: auto` block has already taken all the space
+	// there is, so the leftover is zero. And only a positive leftover is split -- a negative
+	// one would push the box off the left edge.
+	if s.width.unit != .auto && s.width.unit != .none {
+		leftover := containing_width - content_width - frame - margin.left - margin.right
+		if leftover > 0 {
+			if s.margin.left.unit == .auto && s.margin.right.unit == .auto {
+				border_x = x + leftover / 2
+			} else if s.margin.left.unit == .auto {
+				border_x = x + leftover
+			} else if s.margin.right.unit == .auto {
+				border_x = x
+			}
+		}
+	}
 	content_x := border_x + border.left + padding.left
 	mut cursor := y + border.top + padding.top
 	content_y := cursor

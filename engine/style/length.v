@@ -32,6 +32,7 @@ pub enum Unit {
 	// impossible to tell `margin: auto` from no margin at all -- and those two have
 	// opposite meanings. That is acceptance case 5, and it is why this order is the way
 	// it is.
+	none
 	auto
 	px
 	pt
@@ -55,7 +56,6 @@ pub enum Unit {
 	vb
 	vi
 	percent
-	none
 }
 
 // Context carries the two font sizes a relative length needs, and the viewport,
