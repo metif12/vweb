@@ -55,6 +55,12 @@ fn (mut p Painter) box(b &display.Box) {
 	if b.glyphs.len > 0 {
 		p.list.glyph_run(b.glyphs, b.style.color)
 	}
+	// Atomic inline-level boxes are painted here rather than with the children, because
+	// their position comes from the line layout: they sit at the point the line breaker put
+	// them, which is not where block layout would put them.
+	for bx in b.atomics {
+		p.box(bx)
+	}
 	for child in b.children {
 		p.box(child)
 	}

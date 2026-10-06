@@ -51,6 +51,22 @@ pub mut:
 	font_size f64
 }
 
+// InlineItem is one item of a block's inline content: either a stretch of text or an
+// atomic inline-level box.
+//
+// A struct with a tag rather than a sum type, because V's parser does not accept `&Box`
+// as a match arm -- `match it { &Box { ... } }` is a parse error, verified against a
+// minimal reproduction. The two cases still have to be told apart while iterating the
+// content in source order, and a boolean does that without a sum type.
+pub struct InlineItem {
+pub mut:
+	is_box    bool
+	text      string
+	style     style.Style
+	font_size f64
+	box       &Box = unsafe { nil }
+}
+
 // Box is annotated @[heap] because boxes are allocated with `&Box{}` and then
 // written through that pointer after the frame that made them has returned. Without
 // it V may place them on the stack, and the first write through the stale pointer is
@@ -100,7 +116,15 @@ pub mut:
 	max_content_width int
 	min_content_width int
 	children          []&Box
-	element           &html.Tag = unsafe { nil }
+	// atomics are this block's atomic inline-level boxes (inline-block). They are not in
+	// `children`, because their position comes from the line layout rather than from block
+	// layout: they sit *inside* a line, at the point the line breaker put them.
+	atomics []&Box
+	// inline_items is the inline content in source order, text and atomics interleaved.
+	// `runs` and `atomics` are the same content split by type -- which is what shaping and
+	// the tests each want -- but only this list knows the order between them.
+	inline_items []InlineItem
+	element      &html.Tag = unsafe { nil }
 	// is_anonymous marks a box with no element of its own -- the block an inline
 	// element's text was collected into. Paint needs to know, because an anonymous box
 	// has no background of its own to draw.
@@ -176,13 +200,14 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 	// they travel in `style`, and `style` was always the element's own. Only `font-size`
 	// was wrong, because it was the one property travelling as a number alongside the style
 	// rather than inside it.
-	mut pending := []InlineRun{}
+	mut pending := []InlineItem{}
 	for child in el.children {
 		if tree.is_text(child) {
 			// Whitespace is kept rather than dropped. Dropping a whitespace-only node
 			// between two inline elements glues them together: `<b>a</b> <i>b</i>` would
 			// become "ab". Collapsing happens once, in `inline_box`.
-			pending << InlineRun{
+			pending << InlineItem{
+				is_box:    false
 				text:      child.content
 				style:     s
 				font_size: child_ctx.font_size
@@ -194,6 +219,17 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 		}
 		cs := l.engine.compute(child, &s, &child_ctx, l.state)
 		if cs.display == .none {
+			continue
+		}
+		if cs.display == .inline_block {
+			// An inline-block is inline-level but atomic: it becomes a child box that the
+			// line breaker treats as one unbreakable unit, rather than text collected into
+			// the surrounding run. Without this it would be laid out as a block and get a
+			// line of its own, which is the one thing it must not do.
+			pending << InlineItem{
+				is_box: true
+				box:    l.build(child, cs, &child_ctx)
+			}
 			continue
 		}
 		if !cs.display.is_block_level() {
@@ -213,7 +249,8 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 					b.children << box
 				}
 				pending = [
-					InlineRun{
+					InlineItem{
+						is_box:    false
 						text:      collect_text(child)
 						style:     cs
 						font_size: child_ctx.font_size
@@ -233,7 +270,8 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 			// style and the style *is* the element's own. That is what made this so easy to
 			// miss: every other per-run property worked, and the one that did not is the
 			// one a reader notices first.
-			pending << InlineRun{
+			pending << InlineItem{
+				is_box:    false
 				text:      collect_text(child)
 				style:     cs
 				font_size: resolve(cs.font_size, &child_ctx, f64(l.viewport_width))
@@ -259,66 +297,99 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 // properties that belong to an element's own box -- background, borders, margin and
 // padding -- and an inline element's background *is* its own, so this is what stops
 // `<span style="background:yellow">` painting behind the whole block.
-fn inline_box(in_runs []InlineRun, s style.Style, font_size f64) ?&Box {
-	if in_runs.len == 0 {
+fn inline_box(in_items []InlineItem, s style.Style, font_size f64) ?&Box {
+	if in_items.len == 0 {
 		return none
 	}
-	mut runs := []InlineRun{cap: in_runs.len}
-	for r in in_runs {
-		t := collapse_inline_space(r.text, s.white_space)
+	mut items := []InlineItem{cap: in_items.len}
+	mut runs := []InlineRun{}
+	mut atomics := []&Box{}
+	for item in in_items {
+		if item.is_box {
+			atomics << item.box
+			items << item
+			continue
+		}
+		t := collapse_inline_space(item.text, s.white_space)
 		if t == '' {
 			continue
 		}
-		runs << InlineRun{
+		nr := InlineRun{
 			text:      t
-			style:     text_style_of(r.style)
-			font_size: r.font_size
+			style:     text_style_of(item.style)
+			font_size: item.font_size
+		}
+		runs << nr
+		items << InlineItem{
+			is_box:    false
+			text:      t
+			style:     nr.style
+			font_size: nr.font_size
 		}
 	}
-	if runs.len == 0 {
+	if items.len == 0 {
 		return none
 	}
-	// The block's own leading and trailing whitespace goes, but not a run in the middle:
-	// the space between `<b>a</b>` and `<i>b</i>` is inside the block and has to survive,
-	// which is the whole reason runs are collapsed individually rather than joined first.
-	trim_leading(mut runs)
-	trim_trailing(mut runs)
-	if runs.len == 0 {
+	// The block's own leading and trailing whitespace goes, but not an item in the middle:
+	// the space between `<b>a</b>` and `<i>b</i>` is inside the block and has to survive.
+	// Atomic boxes are never dropped -- they are not whitespace.
+	trim_items(mut items)
+	if items.len == 0 {
 		return none
 	}
-	// Built after the trims, not before. It was not, and `text` came out as
-	// " spaced out here " for the one block whose leading and trailing whitespace is
-	// supposed to go.
+	// Rebuilt after the trim, since the trim can drop items from either end.
+	runs = []InlineRun{}
+	atomics = []&Box{}
 	mut flat := strings.new_builder(64)
-	for r in runs {
-		flat.write_string(r.text)
+	for item in items {
+		if item.is_box {
+			atomics << item.box
+			// A stand-in so `text` is non-empty and the box takes the text branch in
+			// `place`. The box's own content is not text and is not measured here.
+			flat.write_string(' ')
+		} else {
+			runs << InlineRun{
+				text:      item.text
+				style:     item.style
+				font_size: item.font_size
+			}
+			flat.write_string(item.text)
+		}
 	}
 	return &Box{
 		style:        text_style_of(s)
 		text:         flat.str()
 		runs:         runs
+		atomics:      atomics
+		inline_items: items
 		font_size:    font_size
 		is_anonymous: true
 	}
 }
 
-fn trim_leading(mut runs []InlineRun) {
-	for i in 0 .. runs.len {
-		runs[i].text = runs[i].text.trim_left(' \n\t\r')
-		if runs[i].text != '' {
-			return
-		}
+// trim_items drops leading and trailing items that are whitespace-only text, leaving
+// anything in the middle alone. Atomic boxes are never dropped: they are not whitespace
+// and have to stay exactly where they were.
+fn trim_items(mut items []InlineItem) {
+	mut start := 0
+	for start < items.len && !items[start].is_box
+		&& collapse_inline_space(items[start].text, .normal).trim_space() == '' {
+		start++
 	}
-}
-
-fn trim_trailing(mut runs []InlineRun) {
-	mut i := runs.len - 1
-	for i >= 0 {
-		runs[i].text = runs[i].text.trim_right(' \n\t\r')
-		if runs[i].text != '' {
-			return
-		}
-		i--
+	mut end := items.len
+	for end > start && !items[end - 1].is_box
+		&& collapse_inline_space(items[end - 1].text, .normal).trim_space() == '' {
+		end--
+	}
+	items = items[start..end]
+	// Dropping a whitespace-only item is not the same as dropping the whitespace. A single
+	// item holding " spaced out here " is not whitespace-only, so it survives the pass above
+	// and still carries the block's own leading and trailing space. Those go here.
+	if start < items.len && !items[start].is_box {
+		items[start].text = items[start].text.trim_left(' \n\t\r')
+	}
+	if end > start && !items[end - 1].is_box {
+		items[end - 1].text = items[end - 1].text.trim_right(' \n\t\r')
 	}
 }
 
@@ -460,6 +531,14 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		previous_bottom = cm.bottom
 		first = false
 		i++
+	}
+
+	// Atomic inline-level boxes have to be sized before the text is laid out, because the
+	// line breaker needs their widths. They are placed at a temporary position here and
+	// given their real one during shaping.
+	for ai in 0 .. b.atomics.len {
+		mut bx := b.atomics[ai]
+		l.place(mut bx, content_width, content_x, content_y, false)
 	}
 
 	if b.text != '' {
@@ -850,6 +929,11 @@ struct Atom {
 	content string
 	width   f64
 	space   bool
+	// is_box marks an atomic inline-level box rather than a stretch of text. Such an
+	// atom is never broken and carries the box it stands for, so the shaper can place
+	// it and the line breaker can treat it as one unbreakable unit.
+	is_box bool
+	box    &Box = unsafe { nil }
 }
 
 // layout_runs breaks a box's inline content into lines and shapes each one where it will
@@ -874,9 +958,19 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 	// Atoms first, across every run, so a break can land on a run boundary as easily as on
 	// a space inside one.
 	mut atoms := []Atom{}
-	for ri, r in b.runs {
-		run_style := font_style_of(r.style, r.font_size, ctx)
-		for tok in tokenize_inline(r.text, b.style.white_space) {
+	mut ri := 0
+	for item in b.inline_items {
+		if item.is_box {
+			atoms << Atom{
+				run:    -1
+				width:  f64(item.box.rect.width)
+				is_box: true
+				box:    item.box
+			}
+			continue
+		}
+		run_style := font_style_of(item.style, item.font_size, ctx)
+		for tok in tokenize_inline(item.text, b.style.white_space) {
 			atoms << Atom{
 				run:     ri
 				content: tok
@@ -884,6 +978,7 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 				space:   tok.len > 0 && (tok[0] == ` ` || tok[0] == `\t` || tok[0] == `\n`)
 			}
 		}
+		ri++
 	}
 	if atoms.len == 0 {
 		return []LaidLine{}
@@ -941,13 +1036,19 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 	mut out := []LaidLine{cap: lines.len}
 	mut y := content_y
 	for line_atoms in lines {
+		// Iterating the atoms on this line directly, rather than every run in the box, is
+		// what keeps a 28px run on the second line from inflating the first.
 		mut above := 0.0
 		mut below := 0.0
-		for ri in 0 .. b.runs.len {
-			if !line_has_run(line_atoms, ri) {
+		for a in line_atoms {
+			if a.is_box {
+				// An atomic box sits on the baseline: its bottom margin edge is the line's
+				// baseline, which is `vertical-align: baseline` for inline-block. So its
+				// whole height is above the baseline and none of it below.
+				above = fmax(above, f64(a.box.rect.height))
 				continue
 			}
-			rs := font_style_of(b.runs[ri].style, b.runs[ri].font_size, ctx)
+			rs := font_style_of(b.runs[a.run].style, b.runs[a.run].font_size, ctx)
 			m := l.fonts.line_metrics(&rs)
 			half := (m.line_height - (m.ascent + m.descent)) / 2.0
 			above = fmax(above, m.ascent + half)
@@ -959,6 +1060,14 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 		mut glyphs := []text.PositionedGlyph{}
 		mut i := 0
 		for i < line_atoms.len {
+			if line_atoms[i].is_box {
+				mut bx := line_atoms[i].box
+				bx.rect.x = int(x)
+				bx.rect.y = int(baseline) - bx.rect.height
+				x += line_atoms[i].width
+				i++
+				continue
+			}
 			mut j := i
 			mut seg := strings.new_builder(32)
 			for j < line_atoms.len && line_atoms[j].run == line_atoms[i].run {
@@ -983,19 +1092,6 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 		y += line_height
 	}
 	return out
-}
-
-// line_has_run reports whether any atom on the line came from run `ri`. A line's height
-// depends on the fonts that actually appear on it, not on every font in the box: a 28px run
-// on the second line must not make the first one tall.
-
-fn line_has_run(atoms []Atom, ri int) bool {
-	for a in atoms {
-		if a.run == ri {
-			return true
-		}
-	}
-	return false
 }
 
 fn fmax(a f64, b f64) f64 {

@@ -281,7 +281,7 @@ pub enum BoxSizing {
 // measured. Keeping them apart here means layout can ask both questions.
 pub fn (d Display) is_block_level() bool {
 	return match d {
-		.inline, .none { false }
+		.inline, .inline_block, .none { false }
 		else { true }
 	}
 }

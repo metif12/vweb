@@ -465,6 +465,47 @@ fn test_an_auto_width_fills_the_space_available() {
 	assert word_box('div { width: 50% }', 'aa bb cc', 800).rect.width == 400
 }
 
+// --- inline-block as an atomic box ------------------------------------------
+
+fn inline_block_div(sheet string) &Box {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 'ib', '')
+	attach(mut span, text_el('X'))
+	attach(mut div, text_el('a'), span, text_el('b'))
+	attach(mut body, div)
+	mut l := layouter(sheet, 800)
+	return box_for(l.layout(body), 'd')
+}
+
+fn test_an_inline_block_shares_a_line_with_the_text_around_it() {
+	// The whole point: an inline-block is inline-level, so it sits on the same line as the
+	// text around it rather than getting a line of its own.
+	d := inline_block_div('span { display: inline-block; width: 20px }')
+	assert d.children.len == 1
+	assert d.children[0].line_count == 1
+	assert d.children[0].atomics.len == 1
+	// And the text is still in source order, with the box as a stand-in between the runs.
+	assert d.children[0].text == 'a b'
+}
+
+fn test_an_inline_block_is_never_broken() {
+	// Atomic means unbreakable: an inline-block wider than its container is not split, it
+	// overflows as one unit. A breakable box would be divided, and the line breaker has no
+	// business dividing it.
+	d := inline_block_div('span { display: inline-block; width: 900px }')
+	assert d.children[0].atomics.len == 1
+	assert d.children[0].atomics[0].rect.width == 900
+}
+
+fn test_an_inline_block_is_laid_out_as_a_box() {
+	// It is a box, so it has a width and a height of its own, and those are what the line
+	// breaker measures rather than the width of its text.
+	d := inline_block_div('span { display: inline-block; width: 30px; height: 25px }')
+	assert d.children[0].atomics[0].rect.width == 30
+	assert d.children[0].atomics[0].rect.height == 25
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {
