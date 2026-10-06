@@ -410,6 +410,45 @@ fn test_a_box_with_padding_is_wider_intrinsically_than_one_without() {
 	assert padded.min_content_width > plain.min_content_width
 }
 
+// --- acceptance cases 3 and 6 ----------------------------------------------
+
+fn test_a_percentage_width_resolves_against_a_parent_that_is_itself_a_percentage() {
+	// Case 3. A percentage is against the parent's *used* width, not against the viewport,
+	// so 50% of 50% of 800 is 200 and not 400. Getting this wrong is invisible on any page
+	// whose parents all have pixel widths.
+	mut body := el('body', '', '')
+	mut outer := el('div', 'outer', '')
+	mut inner := el('div', 'inner', '')
+	attach(mut inner, text_el('abc'))
+	attach(mut outer, inner)
+	attach(mut body, outer)
+	mut l := layouter('div { width: 50% }', 800)
+	root := l.layout(body)
+	o := box_for(root, 'outer')
+	i := box_for(root, 'inner')
+	assert o.rect.width == 400
+	assert i.rect.width == 200
+}
+
+fn test_a_word_that_exactly_fits_stays_and_one_pixel_wider_breaks() {
+	// Case 6. The boundary is `>` and not `>=`: a word that exactly fills the space fits,
+	// and one pixel more does not. The widths are measured rather than written as numbers,
+	// so the test does not depend on the font it happens to run with.
+	//
+	// The second word is the one that has to move. A *single* unbreakable word wider than
+	// its container does not split -- it overflows, which is correct -- so testing the
+	// boundary on one word would have been testing the wrong thing.
+	// The whole string is measured as one unit, space included. Measuring the words
+	// separately and adding them up forgets the space between them, which is itself an
+	// atom with a width -- and that is exactly the kind of off-by-one this case is about.
+	both_text := 'aa incomprehensibilities'
+	w := word_box('div { width: 400px }', both_text, 800).max_content_width
+	both := word_box('div { width: ${w}px }', both_text, 800)
+	assert both.children[0].line_count == 1
+	short := word_box('div { width: ${w - 1}px }', both_text, 800)
+	assert short.children[0].line_count == 2
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {

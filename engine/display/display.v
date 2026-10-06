@@ -904,8 +904,12 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 			mn = a.width
 		}
 	}
-	b.max_content_width = px(mx)
-	b.min_content_width = px(mn)
+	// Rounded *up*, not to nearest. These are upper bounds on what the content needs, and
+	// rounding a sum of advances down loses up to half a pixel -- which is enough to make a
+	// container one pixel narrower than the content it was measured to fit, and so to break a
+	// line that should have stayed whole.
+	b.max_content_width = int(math.ceil(mx))
+	b.min_content_width = int(math.ceil(mn))
 
 	// Greedy fill. A space never starts a line and never causes one, so the break is taken
 	// before the word that would not fit rather than after the space before it.
