@@ -87,10 +87,13 @@ layout نداشت و بلوک تنها چیزی بود که بلد بود بسا
 
 **بخش‌های باقی‌مانده.**
 
-- ساخت inline box (anonymous box، inline-block اتمی)
-- line box
-- **min-content / max-content / stretch-to-fit**
-- `min-width` / `min-height` / `max-*` / `box-sizing`
+- ساخت inline box (anonymous box) — **انجام شد**
+- line box (half-leading، متریکس هر خط) — **انجام شد**
+- **min-content / max-content** — **انجام شد** (به‌عنوان اندازه‌گیری روی هر جعبه)
+- `min-width` / `min-height` / `max-*` — **انجام شد**
+- `box-sizing` — **انجام شد**
+- inline-block اتمی — **انجام شد** (چیدمان + رندر)
+- **stretch-to-fit** — بعدی
 - پروتکل relayout طبق `docs/ARCHITECTURE.md` بخش ۵
 
 **دروازهٔ پذیرش.** هشت کیس کلاسیک intrinsic sizing پاس، به‌علاوهٔ تست واحد روی
