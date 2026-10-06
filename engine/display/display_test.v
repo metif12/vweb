@@ -449,6 +449,22 @@ fn test_a_word_that_exactly_fits_stays_and_one_pixel_wider_breaks() {
 	assert short.children[0].line_count == 2
 }
 
+// --- acceptance case 4 -------------------------------------------------------
+
+fn test_an_auto_width_fills_the_space_available() {
+	// Case 4. A block with no width takes the space its parent leaves. The distinction that
+	// matters is against max-content: an auto block is as wide as the *space*, not as wide
+	// as its text, and conflating the two is what makes a block shrink to its content.
+	b := word_box('div { }', 'aa bb cc', 800)
+	assert b.rect.width == 800
+	assert b.rect.width > b.max_content_width
+	// Margins reduce the space, so they reduce the auto width too.
+	m := word_box('div { margin: 0 50px }', 'aa bb cc', 800)
+	assert m.rect.width == 700
+	// A percentage is not `auto` and must not be treated as filling the space.
+	assert word_box('div { width: 50% }', 'aa bb cc', 800).rect.width == 400
+}
+
 fn box_for(root &Box, id string) &Box {
 	for b in boxes(root) {
 		if b.element != unsafe { nil } && b.element.attributes['id'] == id {
