@@ -44,20 +44,13 @@ pub mut:
 // string and so lost `<b>bold</b>` and `font-size:28px` inside a paragraph, while stage B
 // keeps each stretch's own style so the line breaker can break *between* runs and shape
 // each one with the font it asked for.
-pub struct InlineRun {
-pub mut:
-	text      string
-	style     style.Style
-	font_size f64
-}
-
 // InlineItem is one item of a block's inline content: either a stretch of text or an
 // atomic inline-level box.
 //
 // A struct with a tag rather than a sum type, because V's parser does not accept `&Box`
-// as a match arm -- `match it { &Box { ... } }` is a parse error, verified against a
-// minimal reproduction. The two cases still have to be told apart while iterating the
-// content in source order, and a boolean does that without a sum type.
+// as a match arm -- `match it { &Box { ... } }` is a parse error. The two cases still
+// have to be told apart while iterating the content in source order, and a boolean does
+// that without a sum type.
 pub struct InlineItem {
 pub mut:
 	is_box    bool
@@ -65,6 +58,13 @@ pub mut:
 	style     style.Style
 	font_size f64
 	box       &Box = unsafe { nil }
+}
+
+pub struct InlineRun {
+pub mut:
+	text      string
+	style     style.Style
+	font_size f64
 }
 
 // Box is annotated @[heap] because boxes are allocated with `&Box{}` and then
@@ -117,11 +117,12 @@ pub mut:
 	min_content_width int
 	children          []&Box
 	// atomics are this block's atomic inline-level boxes (inline-block). They are not in
-	// `children`, because their position comes from the line layout rather than from block
+	// children, because their position comes from the line layout rather than from block
 	// layout: they sit *inside* a line, at the point the line breaker put them.
 	atomics []&Box
 	// inline_items is the inline content in source order, text and atomics interleaved.
-	// `runs` and `atomics` are the same content split by type -- which is what shaping and
+	// 
+	// runs` and `atomics are the same content split by type -- which is what shaping and
 	// the tests each want -- but only this list knows the order between them.
 	inline_items []InlineItem
 	element      &html.Tag = unsafe { nil }
@@ -537,6 +538,9 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	// line breaker needs their widths. They are placed at a temporary position here and
 	// given their real one during shaping.
 	for ai in 0 .. b.atomics.len {
+		if b.atomics[ai] == nil {
+			continue
+		}
 		mut bx := b.atomics[ai]
 		l.place(mut bx, content_width, content_x, content_y, false)
 	}
@@ -960,7 +964,7 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 	mut atoms := []Atom{}
 	mut ri := 0
 	for item in b.inline_items {
-		if item.is_box {
+		if item.is_box && item.box != nil {
 			atoms << Atom{
 				run:    -1
 				width:  f64(item.box.rect.width)

@@ -24,6 +24,14 @@ pub mut:
 
 // Unit is a CSS length unit, or `auto` for a length the property sizes itself.
 pub enum Unit {
+	// none means "not a length", which is what a keyword like `thin` or `medium`
+	// resolves to once it has been turned into a number.
+	//
+	// It is first so that the zero value of a Length is "not a length" and not `auto`.
+	// With `auto` first, a margin that was never declared read as `auto`, which made it
+	// impossible to tell `margin: auto` from no margin at all -- and those two have
+	// opposite meanings. That is acceptance case 5, and it is why this order is the way
+	// it is.
 	auto
 	px
 	pt
@@ -47,8 +55,6 @@ pub enum Unit {
 	vb
 	vi
 	percent
-	// none means "not a length", which is what a keyword like `thin` or `medium`
-	// resolves to once it has been turned into a number.
 	none
 }
 
