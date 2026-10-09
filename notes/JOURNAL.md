@@ -1395,3 +1395,52 @@ allocate 16777216 bytes` و بعد `spawn UNKNOWN` هر دو **محیط** بود
 
 **نکتهٔ مهم:** کرش `invalid memory access` در `place` از دسترسی به `item.box` که `nil`
 بود می‌آمد. با یک گارد `item.box != nil` و گارد مشابه در حلقهٔ atomics برطرف شد.
+
+---
+
+## stretch-to-fit — یک `auto` که دو معنا دارد
+
+**وضعیت:** کامل شد. `فایل تست: 1 passed, 1 total` (۸۷ تابع `test_`)، بدون هشدار و
+بدون notice.
+
+**باگ:** `box_width` برای `.auto` همان `available` را برمی‌گرداند، و آن در حلقهٔ
+atomics عرض کل خط است. پس `<span style="display:inline-block">text</span>` داخل
+پاراگراف تمام عرض خط را می‌گرفت — همان چیزی که `width: auto` برای یک *بلوک* درست
+است و برای یک جعبهٔ اتمی نیست.
+
+**کنترل، با همان تست‌ها و بدون اصلاح (`git stash` روی `display.v`):**
+
+```
+test_an_auto_inline_block_hugs_its_content
+  assert ib.rect.width == ib.max_content_width
+  Left value: 400   Right value: 25     ← خط، و بعد عرض متن
+test_an_auto_inline_block_overflows_rather_than_breaking_its_longest_word
+  assert ib.rect.width == min_w
+  Left value: 10    Right value: 154    ← جعبه به ۱۰ *کوچک* شده بود، نه سرریز
+test_the_frame_is_inside_the_shrink_to_fit_width
+  assert ib.rect.width == ib.max_content_width
+  Left value: 800   Right value: 49
+```
+
+با اصلاح: هر سه سبز. پس تست‌ها دندان دارند.
+
+**دو چیز که اندازه گرفته شد، نه از حافظه:**
+
+- `min`/`max` در این نسخهٔ V **builtin نیستند** — نه در `builtin`، نه در `math`
+  (فقط `minmax` برای `f64`). پس `min_of` کنار `max_of` نوشته شد، همان الگوی موجود.
+- عرض ذاتیِ یک جعبه **فرم خودش را هم شامل می‌شود**: `place` آن را
+  `child_min + frame` حساب می‌کند. پس نتیجهٔ shrink-to-fit عرض border-box است و
+  `containing_width = fitted + margin` است (نه `fitted + margin + frame`). اگر frame
+  را یک بار هم به عرض اضافه کنیم، یک inline-block با `padding: 0 10px` دقیقاً یک
+  frame پهن‌تر از محتوایش می‌شود؛ تست
+  `test_the_frame_is_inside_the_shrink_to_fit_width` همان است.
+
+**چرا پاسِ measure با عرض بزرگ:** عرض ذاتی برای *متن* مستقل از عرض شکست است، ولی
+برای یک اتمِ تودرتو نیست — عرض اتم در `layout_runs` از `item.box.rect.width` خوانده
+می‌شود. اگر جعبه اول با عرض واقعی چیده می‌شد، اتم داخلش خودش را به همان عرض
+fit می‌کرد و max-content این جعبه «فضایی که به او داده شد» سنجیده می‌شد، نه
+«عرض محتوایش».
+
+**کیس ۱ پذیرش** (کلمهٔ بلند در عرض کم) از قبل درست بود؛ با
+`test_a_long_word_is_not_broken_to_fit_a_narrow_box` قفل شد — هر گلیف روی یک
+baseline و در ۱۶px.

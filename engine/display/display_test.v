@@ -217,6 +217,26 @@ fn test_a_long_word_overflows_rather_than_shrinking() {
 	assert b.children[0].line_count == 1
 }
 
+fn test_a_long_word_is_not_broken_to_fit_a_narrow_box() {
+	// Acceptance case 1, on the glyphs rather than only on the box. The test above
+	// asserts the box kept its 40px; what this adds is the word itself: every glyph is
+	// on one baseline, so it was not broken, and the glyphs are still 16px, so it was
+	// not scaled down to fit. A narrower box, a mid-word break and a shrunken font are
+	// the three ways this case can be got wrong, and each is caught here on its own.
+	b := word_box('div { width: 40px }', 'incomprehensibilities', 800)
+	assert b.rect.width == 40
+	glyphs := b.children[0].glyphs
+	assert glyphs.len > 0
+	for g in glyphs {
+		assert g.y == glyphs[0].y
+		assert g.size == 16.0
+	}
+	// The word is still reported as wider than the box that holds it, which is what
+	// says the box was not quietly narrowed to the space it was given.
+	assert b.min_content_width > b.rect.width
+	assert b.children[0].line_count == 1
+}
+
 fn test_min_width_holds_a_box_open() {
 	// Case 2's shape, without flexbox: a floor below the requested width. This is the
 	// rule that keeps a long word from being crushed by a narrow parent.
@@ -496,6 +516,112 @@ fn test_an_inline_block_is_laid_out_as_a_box() {
 	d := inline_block_div('span { display: inline-block; width: 30px; height: 25px }')
 	assert d.children[0].atomics[0].rect.width == 30
 	assert d.children[0].atomics[0].rect.height == 25
+}
+
+// --- stretch-to-fit: an atomic inline-level box with width auto --------------
+
+// An inline-block holding `inner` as its only content, inside a div of `width`, and
+// returning that div. Its content box is the line the box has to fit into -- the div
+// has no frame of its own here -- so the width is the space available before the box's
+// own margins take their share.
+//
+// The width is a parameter rather than something inside `sheet` because every test here
+// is the same box in a different amount of space: wider than the content, between the
+// two intrinsic widths, and narrower than both.
+fn atomic_div(sheet string, width int, inner string) &Box {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 'ib', '')
+	attach(mut span, text_el(inner))
+	attach(mut div, text_el('a'), span, text_el('b'))
+	attach(mut body, div)
+	mut l := layouter('div { width: ${width}px } ' + sheet, width)
+	return box_for(l.layout(body), 'd')
+}
+
+fn test_an_auto_inline_block_hugs_its_content() {
+	d := atomic_div('span { display: inline-block }', 400, 'abc')
+	ib := d.children[0].atomics[0]
+	// Shrink-to-fit, CSS 2.1 10.3.9: the line is wider than the content, so the box
+	// takes the content's width and not the line's. This is the whole bug the section
+	// is here for -- `width: auto` inside `place` used to fill the line.
+	assert ib.rect.width == ib.max_content_width
+	assert ib.rect.width < d.content.width
+	// The text around it stayed on the one line it belongs on: an inline-block taking
+	// the whole line pushed the words after it onto the next one.
+	assert d.children[0].line_count == 1
+	assert ib.children[0].line_count == 1
+}
+
+fn test_an_auto_inline_block_takes_the_width_it_has() {
+	// The middle of the clamp: the line is wider than the longest word and narrower
+	// than the whole text, so the box takes exactly the width available and wraps its
+	// own text to get into it.
+	wide := atomic_div('span { display: inline-block }', 800, 'aa bb cc dd')
+	ib := wide.children[0].atomics[0]
+	min_w := ib.min_content_width
+	max_w := ib.max_content_width
+	assert max_w > min_w
+	available := min_w + (max_w - min_w) / 2
+	assert available > min_w
+	assert available < max_w
+	d := atomic_div('span { display: inline-block }', available, 'aa bb cc dd')
+	fitted := d.children[0].atomics[0]
+	assert fitted.rect.width == available
+	// Wrapped rather than overflowed: the text did not fit, so it broke.
+	assert fitted.children[0].line_count > 1
+}
+
+fn test_an_auto_inline_block_overflows_rather_than_breaking_its_longest_word() {
+	// The floor of the same clamp, which is acceptance case 1 in the other direction:
+	// the line is narrower than a word that cannot be broken, so the box runs past the
+	// line instead of clipping, scaling or splitting the word.
+	wide := atomic_div('span { display: inline-block }', 800, 'incomprehensibilities')
+	min_w := wide.children[0].atomics[0].min_content_width
+	assert min_w > 0
+	d := atomic_div('span { display: inline-block }', 10, 'incomprehensibilities')
+	ib := d.children[0].atomics[0]
+	assert ib.rect.width == min_w
+	assert ib.rect.width > d.content.width
+	assert ib.children[0].line_count == 1
+}
+
+fn test_the_frame_is_inside_the_shrink_to_fit_width() {
+	// Padding and border are part of the fitted width, not added to it. A box that
+	// hugged its text and then took the frame on top would be wider than the content
+	// by exactly the frame, which is the mistake this case separates out.
+	d := atomic_div('span { display: inline-block; padding: 0 10px; border-width: 2px; border-style: solid }',
+		800, 'abc')
+	ib := d.children[0].atomics[0]
+	assert ib.rect.width == ib.max_content_width
+	frame := ib.rect.width - ib.content.width
+	assert frame == 2 * (10 + 2)
+	assert ib.children[0].line_count == 1
+}
+
+fn test_an_auto_inline_block_fits_the_width_its_margins_leave() {
+	// The other half of what comes off the line before the clamp: the margins. The two
+	// intrinsic widths are measured at a width where they are unambiguous, and the line
+	// is then set to the width between them that the margins leave -- so the case is
+	// the box taking 40px less than the line for its 20px margins, not a number that
+	// happened to survive this font.
+	wide := atomic_div('span { display: inline-block; margin: 0 20px }', 800, 'aa bb cc dd')
+	ib := wide.children[0].atomics[0]
+	assert ib.max_content_width > ib.min_content_width
+	available := ib.min_content_width + (ib.max_content_width - ib.min_content_width) / 2
+	d := atomic_div('span { display: inline-block; margin: 0 20px }', available + 2 * 20,
+		'aa bb cc dd')
+	fitted := d.children[0].atomics[0]
+	assert fitted.rect.width == available
+}
+
+fn test_an_explicit_width_is_not_shrunk_to_fit() {
+	// The other side of the rule: shrink-to-fit is what `width: auto` means. An
+	// inline-block that asked for a width gets it, even in a line much narrower.
+	d := atomic_div('span { display: inline-block; width: 300px }', 40, 'abc')
+	ib := d.children[0].atomics[0]
+	assert ib.rect.width == 300
+	assert ib.children[0].line_count == 1
 }
 
 // --- acceptance case 5: margin auto ----------------------------------------

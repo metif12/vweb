@@ -562,7 +562,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 			continue
 		}
 		mut bx := b.atomics[ai]
-		l.place(mut bx, content_width, content_x, content_y, false)
+		l.place_atomic(mut bx, content_width, content_x, content_y)
 	}
 
 	if b.text != '' {
@@ -667,6 +667,57 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	b.border_px = bw
 	b.content.height = max_of(content_height, 0)
 	return border_height
+}
+
+// unbreakable_width is a containing width wide enough that nothing laid out inside it
+// wraps. It is what the measure pass of `place_atomic` gives a box that it is about to
+// size. `wrap_width` already means this as 1.0e9 for `nowrap`; this one is an int a
+// million wide because `place` takes a containing width rather than a wrap width, and
+// a million is wider than any line a page can lay out.
+const unbreakable_width = 1_000_000
+
+// place_atomic lays out one atomic inline-level box that sits inside a line of this
+// block, sized to fit the space that line has for it.
+//
+// `line_width` is the width of the line's content box: what is available before the
+// box's own margins take their share. The position it is given here is temporary --
+// the line layout places the box where it actually landed when it shapes the line.
+fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
+	mut containing := line_width
+	// CSS 2.1 10.3.9: `width: auto` on an inline-block is shrink-to-fit,
+	// min(max(preferred minimum, available), preferred) -- and not "fill the line",
+	// which is what the same `auto` means on a block. The two are one `display` value
+	// apart, and reading the block rule onto the inline one is what made
+	// `<span style="display:inline-block">text</span>` take the whole width of the
+	// paragraph around it.
+	//
+	// An explicit width is left to `box_width`, where it was already right.
+	if bx.style.width.unit == .auto || bx.style.width.unit == .none {
+		bx_ctx := l.context(bx.font_size)
+		bx_margin := edges_of(bx.style.margin, &bx_ctx, f64(line_width))
+		// Measure first. The intrinsic widths the clamp is against do not exist until
+		// the box has been laid out, and they have to be the content's own: laid out
+		// at the width it is really going to get, an atomic inside it would already
+		// have shrunk itself to that width, and this box's max-content would be
+		// measured as the space it was given rather than as the width of its content.
+		l.place(mut bx, unbreakable_width, x, y, false)
+		// What is left of the line for the box's *border box*. The intrinsic widths carry
+		// the box's own padding and border -- a parent sizing itself to a child has to
+		// reserve them, which is why a padded box's intrinsic widths are wider than an
+		// unpadded one's by exactly its frame -- so the frame belongs inside the clamp
+		// rather than coming off the space. Taking it off both sides would understate the
+		// space by the frame and every padded inline-block would come out one frame too
+		// narrow.
+		available := line_width - bx_margin.left - bx_margin.right
+		fitted := min_of(max_of(bx.min_content_width, available), bx.max_content_width)
+		// The margins are handed back as containing width so that `place`'s own
+		// `available` comes out as `fitted` less the frame, and its rect as `fitted`.
+		containing = fitted + bx_margin.left + bx_margin.right
+	}
+	// The second pass is a complete replacement, not an adjustment: `place` assigns
+	// `rect`, `content`, `glyphs` and `border_px` rather than adding to any of them, so
+	// the measure pass leaves nothing behind that the real one has to undo.
+	l.place(mut bx, containing, x, y, false)
 }
 
 // zero_width_sides applies the used border-width rule of CSS 2.1 10.3.3: a side whose
@@ -865,6 +916,14 @@ fn px(v f64) int {
 
 fn max_of(a int, b int) int {
 	return if a > b {
+		a
+	} else {
+		b
+	}
+}
+
+fn min_of(a int, b int) int {
+	return if a < b {
 		a
 	} else {
 		b

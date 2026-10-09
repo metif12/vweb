@@ -93,7 +93,7 @@ layout نداشت و بلوک تنها چیزی بود که بلد بود بسا
 - `min-width` / `min-height` / `max-*` — **انجام شد**
 - `box-sizing` — **انجام شد**
 - inline-block اتمی — **انجام شد** (چیدمان + رندر)
-- **stretch-to-fit** — بعدی
+- **stretch-to-fit** — **انجام شد** (برای جعبهٔ اتمی با `width: auto`)
 - پروتکل relayout طبق `docs/ARCHITECTURE.md` بخش ۵
 
 **دروازهٔ پذیرش.** هشت کیس کلاسیک intrinsic sizing پاس، به‌علاوهٔ تست واحد روی
