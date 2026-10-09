@@ -4,6 +4,7 @@ import engine.css
 import engine.raster
 import engine.selector
 import engine.style
+import math
 import net.html
 import text
 
@@ -768,6 +769,20 @@ fn test_a_leading_space_is_kept_because_a_run_is_not_a_line() {
 	assert tokenize_inline(' ab', .normal) == [' ', 'ab']
 }
 
+fn test_a_persian_word_is_one_token_and_stays_persian() {
+	// The tokenizer walks the string's *bytes* unless it is told otherwise, and a Persian
+	// character is two of them. `rune(c).str()` on a byte is the Latin-1 character of that
+	// value, so "سلام" came out as "Ø³Ù„Ø§Ù…" -- six Latin characters -- and was then
+	// measured, shaped and drawn as Latin-1. A Persian page rendered as garbled Latin with
+	// correct right-to-left *ordering* of the wrong letters, which is the kind of failure
+	// that reads as a font problem and is a tokenizer problem.
+	//
+	// Asserted on the tokens rather than on the glyphs because the tokens are what the
+	// shaper is given: if this passes, the bridge receives Persian.
+	assert tokenize_inline('سلام', .normal) == ['سلام']
+	assert tokenize_inline('سلام دنیا', .normal) == ['سلام', ' ', 'دنیا']
+}
+
 fn test_pretends_its_newlines_as_their_own_tokens() {
 	assert tokenize_inline('a\nb', .pre) == ['a', '\n', 'b']
 	assert tokenize_inline('a  b', .pre) == ['a', ' ', ' ', 'b']
@@ -1196,4 +1211,258 @@ fn test_a_persian_page_lays_out() {
 	assert d.style.direction == .rtl
 	anon := d.children[0]
 	assert anon.glyphs.len > 0
+}
+
+// --- acceptance case 7: RTL text in a box with `direction: rtl` ------------
+//
+// The glyph forms were already right before this section, and that is the part worth
+// being precise about: the bridge shapes Persian through the Arabic fallback chain and
+// hands the glyphs back in *visual* order with x increasing from the origin, so for a
+// Persian run the last character written is the leftmost glyph and the first is the
+// rightmost. What was missing is where a line starts. `layout_runs` always put the pen
+// at the content box's left edge, so a Persian paragraph in an RTL box drew flush left,
+// with the letters in the right order on the wrong side.
+//
+// Two things these tests need the sheets to say, both of them measured rather than
+// assumed. `font-family: sans-serif`, because that is what the Persian example uses and
+// because the fallback chain does not rescue a face that has no Arabic: the default
+// family resolves to a serif face whose Arabic coverage is empty, and a per-script
+// font set asks its own two slots before its chain, so Persian drawn in it comes out as
+// .notdef with the em for an advance. And `direction: rtl` on a *block*, because that is
+// the property the case is about.
+//
+// Mixed Persian and Latin runs are deliberately not tested here. A line is laid out in
+// one direction, its box's, and reordering the runs *inside* a line is the bidi work
+// Phase 3 inherits; a test for it now would be a test of behaviour that does not exist.
+
+// The font the tests below ask for, spelled once. See the note above.
+const rtl_font = 'font-family: sans-serif; '
+
+const rtl_words = 'سلام دنیا'
+
+fn min_x_of(glyphs []text.PositionedGlyph) f64 {
+	mut m := glyphs[0].x
+	for g in glyphs {
+		if g.x < m {
+			m = g.x
+		}
+	}
+	return m
+}
+
+fn max_x_of(glyphs []text.PositionedGlyph) f64 {
+	mut m := glyphs[0].x
+	for g in glyphs {
+		if g.x > m {
+			m = g.x
+		}
+	}
+	return m
+}
+
+// furthest_x_of_cluster is the largest x among the glyphs drawn from one character, or
+// -1 when the character drew none. It is how these tests ask "which character is at the
+// right end of the line" without depending on where the pen happened to put it: several
+// glyphs can share an x, because a mark sits on its letter rather than after it.
+//
+// `cluster` is an index into the string that was shaped, and for these strings a rune
+// index, so cluster 0 is the first character of a one-segment line.
+fn furthest_x_of_cluster(glyphs []text.PositionedGlyph, cluster int) f64 {
+	mut m := -1.0
+	for g in glyphs {
+		if g.cluster == cluster && g.x > m {
+			m = g.x
+		}
+	}
+	return m
+}
+
+// laid_lines lays a box's inline content out a second time, because `place` folds the
+// lines into one flat glyph list and keeps only the height: a line's advance width lives
+// in `LaidLine` and nowhere else, and the assertions below are about where a line's left
+// edge is relative to that width.
+//
+// It is the shaped width, not the sum of the box's atoms, and the difference is measured
+// rather than assumed: each atom is one word measured on its own, and Arabic joining
+// makes a word a different width when it is shaped with its neighbours. `max_content_width`
+// is the atom sum, so it is not the width of the line as drawn and using it here would
+// assert a number the ink does not have.
+fn laid_lines(mut b &Box) []LaidLine {
+	mut l := layouter('', b.content.width)
+	ctx := l.context(b.font_size)
+	return l.layout_runs(mut b, &ctx, b.content.x, b.content.y, b.content.width)
+}
+
+fn test_rtl_text_in_an_rtl_box_is_flush_right() {
+	// Case 7. The ink starts one line width in from the content box's right edge, so
+	// the first character written is the rightmost glyph.
+	mut b := plain_box('div { ' + rtl_font + 'direction: rtl }', 800, rtl_words, true)
+	assert b.style.direction == .rtl
+	assert b.content.width == 800
+	assert b.line_count == 1
+	// Every glyph is inside the content box. A line anchored at the wrong edge puts
+	// its first character outside the box it was laid out in, and that is the visible
+	// symptom this case is about.
+	for g in b.glyphs {
+		assert g.x >= f64(b.content.x)
+		assert g.x <= f64(b.content.x + b.content.width)
+	}
+	// The first character of the string is at the right end of the line: no glyph drawn
+	// from a later character reaches further right than the ones drawn from it.
+	assert math.abs(furthest_x_of_cluster(b.glyphs, 0) - max_x_of(b.glyphs)) < 0.001
+	// Flush right: the ink's left edge plus the line's own advance is the content box's
+	// right edge. The pen starts one line width in from that edge, so a line shorter
+	// than the box is held against it.
+	lines := laid_lines(mut b)
+	assert lines.len == 1
+	right := f64(b.content.x + b.content.width)
+	assert math.abs(min_x_of(b.glyphs) + lines[0].width - right) < 0.001
+}
+
+fn test_an_ltr_box_is_unchanged_and_the_rtl_one_mirrors_it() {
+	// The regression guard, and the measurement the case is really about: the same
+	// text in an LTR box is flush left, in an RTL box flush right, and the ink occupies
+	// exactly the same shape either way. Direction moves a line; it does not reshape it.
+	ltr := plain_box('div { ' + rtl_font + '}', 800, rtl_words, true)
+	mut rtl := plain_box('div { ' + rtl_font + 'direction: rtl }', 800, rtl_words, true)
+	assert ltr.style.direction == .ltr
+	assert ltr.max_content_width == rtl.max_content_width
+	assert ltr.glyphs.len == rtl.glyphs.len
+	// Glyph for glyph the RTL line is the LTR line moved right: the same shaping in the
+	// same order, one origin. The relative positions are the two pens' own arithmetic,
+	// grouped differently, hence the thousandth of a pixel.
+	mut i := 0
+	for i < ltr.glyphs.len {
+		assert rtl.glyphs[i].gid == ltr.glyphs[i].gid
+		assert math.abs((rtl.glyphs[i].x - min_x_of(rtl.glyphs)) - (ltr.glyphs[i].x - min_x_of(ltr.glyphs))) < 0.001
+		i++
+	}
+	// Flush left, exactly: the leftmost glyph's pen is the content box's left edge.
+	assert min_x_of(ltr.glyphs) == f64(ltr.content.x)
+	// And the RTL line sits the leftover space further right, where the leftover space is
+	// what its own ink does not fill. Before the fix the shift is zero, which is the
+	// whole of the bug this case is about.
+	rtl_lines := laid_lines(mut rtl)
+	assert rtl_lines.len == 1
+	shift := min_x_of(rtl.glyphs) - min_x_of(ltr.glyphs)
+	leftover := f64(rtl.content.width) - rtl_lines[0].width
+	assert math.abs(shift - leftover) < 0.001
+}
+
+fn test_an_ltr_box_of_latin_text_is_untouched() {
+	// The regression guard in its plainest form: Latin text in a box with no direction
+	// set is laid out exactly as it was before `direction` was read at all -- flush left,
+	// and the first character the leftmost glyph.
+	b := plain_box('', 800, 'abc def', true)
+	assert b.style.direction == .ltr
+	assert b.glyphs.len > 0
+	// The bridge returns visual order, so for Latin that is the order the text was
+	// written in and the first glyph of the list is the first character.
+	assert b.glyphs[0].cluster == 0
+	assert b.glyphs[0].x == f64(b.content.x)
+	assert min_x_of(b.glyphs) == f64(b.content.x)
+}
+
+fn test_two_lines_of_rtl_text_are_both_flush_right() {
+	// Both lines are anchored to the right edge, not just the first: a line that
+	// broke short starts further in from the left edge than a full one, and both end
+	// at the same right edge.
+	sentence := 'این متن فارسی است و باید نوشته شود'
+	mut b := plain_box('div { ' + rtl_font + 'direction: rtl; width: 160px }', 800, sentence, true)
+	assert b.line_count > 1
+	lines := laid_lines(mut b)
+	assert lines.len == b.line_count
+	// The glyphs of one line share the baseline they were shaped at, so the split
+	// between lines is where y stops agreeing. A pixel is the margin on both sides: a
+	// mark lifts its glyph by more than that and a line's baseline moves by the line
+	// height, so the tolerance separates the two and nothing else.
+	right := f64(b.content.x + b.content.width)
+	mut at := 0
+	for ln in lines {
+		mut to := at
+		for to < b.glyphs.len && math.abs(b.glyphs[to].y - b.glyphs[at].y) < 1.0 {
+			to++
+		}
+		// Cloned rather than sliced: a slice of `b.glyphs` copies anyway and says so with
+		// a notice, and this module's test output is read for notices.
+		ln_glyphs := b.glyphs[at..to].clone()
+		at = to
+		assert ln_glyphs.len > 0
+		for g in ln_glyphs {
+			assert g.x >= f64(b.content.x)
+			assert g.x <= right
+		}
+		// The left edge plus the line's own advance is the right edge.
+		assert math.abs(min_x_of(ln_glyphs) + ln.width - right) < 0.001
+	}
+	assert at == b.glyphs.len
+}
+
+fn test_direction_rtl_on_an_ancestor_reaches_a_nested_block() {
+	// Inheritance, which is how a Persian page works: `body` carries the direction
+	// and every block inside it inherits it, so the nested block's text is laid out
+	// from the right edge too.
+	mut body := el('body', '', '')
+	mut outer := el('div', 'outer', '')
+	mut inner := el('div', 'inner', '')
+	attach(mut inner, text_el(rtl_words))
+	attach(mut outer, inner)
+	attach(mut body, outer)
+	root := layouter('div { ' + rtl_font + 'direction: rtl }', 800).layout(body)
+	assert box_for(root, 'outer').style.direction == .rtl
+	assert box_for(root, 'inner').style.direction == .rtl
+	mut anon := box_for(root, 'inner').children[0]
+	assert anon.style.direction == .rtl
+	lines := laid_lines(mut anon)
+	assert lines.len == 1
+	right := f64(anon.content.x + anon.content.width)
+	assert math.abs(min_x_of(anon.glyphs) + lines[0].width - right) < 0.001
+}
+
+fn test_a_rtl_line_reports_its_true_width() {
+	// `LaidLine.width` used to be the pen's distance from the content box's left edge,
+	// which for a right-to-left line is the *box*: the pen is shifted to the right edge
+	// and then walks back left by the line's width, so it ends where it started plus the
+	// box. This is the assertion that catches shifting the pen without correcting the
+	// width, which is exactly the mistake the shift invites.
+	mut b := plain_box('div { ' + rtl_font + 'direction: rtl }', 800, rtl_words, true)
+	lines := laid_lines(mut b)
+	assert lines.len == 1
+	assert lines[0].width > 0.0
+	assert lines[0].width < f64(b.content.width)
+	// And the width it reports is the line's own advance: the ink's left edge plus it
+	// is the content box's right edge, which is the same statement as flush right.
+	assert math.abs(min_x_of(b.glyphs) + lines[0].width - f64(b.content.x + b.content.width)) < 0.001
+}
+
+fn atomic_line(sheet string) &Box {
+	mut body := el('body', '', '')
+	mut div := el('div', 'd', '')
+	mut span := el('span', 'ib', '')
+	attach(mut span, text_el('X'))
+	attach(mut div, span, text_el(rtl_words))
+	attach(mut body, div)
+	return box_for(layouter(sheet, 800).layout(body), 'd').children[0]
+}
+
+fn test_an_atomic_inline_box_is_placed_by_the_rtl_pen() {
+	// The line breaker places atomic boxes with the same pen it lays the text out
+	// with, so in an RTL box the first item on the line -- the atomic, here -- is the
+	// rightmost one and the text that follows it runs left from its left edge.
+	ltr := atomic_line('span { display: inline-block; width: 40px; height: 20px }')
+	mut rtl := atomic_line('div { ' + rtl_font + 'direction: rtl } span { display: inline-block; width: 40px; height: 20px }')
+	assert ltr.atomics.len == 1
+	assert rtl.atomics.len == 1
+	lines := laid_lines(mut rtl)
+	assert lines.len == 1
+	right := f64(rtl.content.x + rtl.content.width)
+	// The atomic is the first item on the line, so the line's left edge is its left edge
+	// and the line's width reaches from there to the right edge. `rect.x` is an int and
+	// the pen is truncated into it, hence the pixel.
+	assert math.abs(f64(rtl.atomics[0].rect.x) + lines[0].width - right) <= 1.0
+	// The text starts where the atomic ends, which is the same pen one item further on.
+	assert math.abs(min_x_of(rtl.glyphs) - f64(rtl.atomics[0].rect.x + rtl.atomics[0].rect.width)) <= 1.0
+	// The LTR twin is untouched: the atomic at the left edge and the text after it.
+	assert ltr.atomics[0].rect.x == ltr.content.x
+	assert min_x_of(ltr.glyphs) == f64(ltr.content.x + ltr.atomics[0].rect.width)
 }

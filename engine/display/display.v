@@ -937,8 +937,9 @@ pub fn (b &Box) background() raster.Color {
 // LaidLine is one line of a box's inline content, after breaking and shaping.
 struct LaidLine {
 	glyphs []text.PositionedGlyph
-	// width is the line's advance. Nothing outside the tests reads it yet; bidi will want
-	// it for alignment.
+	// width is the line's advance: how far the pen travelled putting it down. Alignment
+	// is what will want it -- a right-to-left line reports the width it drew, not the
+	// width of the box it was drawn in, so `text-align` can have a number to place.
 	width  f64
 	height int
 }
@@ -960,6 +961,20 @@ struct Atom {
 	box    &Box = unsafe { nil }
 }
 
+// Segment is one stretch of a line that is shaped in a single call: consecutive atoms
+// of one run, or one atomic box, together with the width it is placed by.
+//
+// A line's segments are collected before any of them is placed, where the code used to
+// shape as it walked, because a right-to-left line starts its pen at the right edge and
+// so needs every segment's width before it can put the first one down.
+struct Segment {
+	is_box bool
+	text   string
+	style  text.FontStyle
+	width  f64
+	box    &Box = unsafe { nil }
+}
+
 // layout_runs breaks a box's inline content into lines and shapes each one where it will
 // be drawn.
 //
@@ -978,6 +993,15 @@ struct Atom {
 fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, content_y int,
 	content_width int) []LaidLine {
 	max_w := wrap_width(b.style.white_space, content_width)
+	// Right to left comes from the box's computed `direction`, which CSS inherits, so an
+	// ancestor's `direction: rtl` reaches the text inside it.
+	//
+	// There is no bidi algorithm here and this is not where one would go: a line is laid
+	// out in one direction, its box's, and reordering the runs *inside* a line -- a Latin
+	// word in a Persian sentence -- is the work Phase 3 inherits. A mixed line is drawn in
+	// the box's direction with each run's own order, which is what the bridge already
+	// shapes.
+	rtl := b.style.direction == .rtl
 
 	// Atoms first, across every run, so a break can land on a run boundary as easily as on
 	// a space inside one.
@@ -1080,37 +1104,88 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 		}
 		line_height := px(above + below)
 		baseline := f64(y) + above
-		mut x := f64(content_x)
-		mut glyphs := []text.PositionedGlyph{}
+		// The line's segments, in source order. Consecutive atoms of one run are joined
+		// into a single segment, so a word spanning two atoms still joins and shapes as a
+		// word. They are collected before any of them is placed because a right-to-left
+		// line has to know the width of every segment before it can put the first one
+		// down: its pen starts at the right edge, not the left.
+		mut segs := []Segment{}
 		mut i := 0
 		for i < line_atoms.len {
 			if line_atoms[i].is_box {
-				mut bx := line_atoms[i].box
-				bx.rect.x = int(x)
-				bx.rect.y = int(baseline) - bx.rect.height
-				x += line_atoms[i].width
+				segs << Segment{
+					is_box: true
+					width:  line_atoms[i].width
+					box:    line_atoms[i].box
+				}
 				i++
 				continue
 			}
 			mut j := i
-			mut seg := strings.new_builder(32)
+			mut sb := strings.new_builder(32)
 			for j < line_atoms.len && line_atoms[j].run == line_atoms[i].run {
-				seg.write_string(line_atoms[j].content)
+				sb.write_string(line_atoms[j].content)
 				j++
 			}
 			r := b.runs[line_atoms[i].run]
 			run_style := font_style_of(r.style, r.font_size, ctx)
-			glyphs << l.fonts.shape(seg.str(), &run_style, x, baseline)
+			// Read once: `Builder.str()` clears the builder, so a second call on the
+			// same one answers with the empty string and the segment would be shaped as
+			// nothing at all -- which is a line that silently loses its text.
+			seg_str := sb.str()
 			mut seg_w := 0.0
 			for k in i .. j {
 				seg_w += line_atoms[k].width
 			}
-			x += seg_w
+			if rtl {
+				// The atoms' widths are each word measured on its own, and Arabic joining
+				// makes a word a different width when it is shaped with its neighbours than
+				// when it is shaped alone. Both directions are measured: on the default face
+				// the sentence these tests break into lines came to 150.09 by its atoms
+				// where it drew 125.89, and 145.60 where it drew 143.36; on the face these
+				// tests ask for, the two agree to the last decimal. Neither can be relied
+				// on, so the segment is measured the way the shaper will draw it and the
+				// line is anchored by that -- otherwise the ink ends short of the right edge
+				// by exactly the difference the font happens to introduce.
+				seg_w = l.fonts.advance(&run_style, seg_str)
+			}
+			segs << Segment{
+				text:  seg_str
+				style: run_style
+				width: seg_w
+			}
 			i = j
+		}
+		// The pen. Left to right it starts at the content box's left edge and walks right,
+		// which is what it has always done. Right to left it starts one line width in from
+		// the right edge and the same segments are then walked left to right from there, so
+		// the first thing written is the rightmost thing drawn, a line shorter than the box
+		// sits flush against the right edge, and an atomic box is placed by the same pen.
+		mut pen := f64(content_x)
+		if rtl {
+			mut total := 0.0
+			for s in segs {
+				total += s.width
+			}
+			pen = f64(content_x + content_width) - total
+		}
+		origin := pen
+		mut glyphs := []text.PositionedGlyph{}
+		for s in segs {
+			if s.is_box {
+				mut bx := s.box
+				bx.rect.x = int(pen)
+				bx.rect.y = int(baseline) - bx.rect.height
+				pen += s.width
+				continue
+			}
+			st := s.style
+			glyphs << l.fonts.shape(s.text, &st, pen, baseline)
+			pen += s.width
 		}
 		out << LaidLine{
 			glyphs: glyphs
-			width:  x - f64(content_x)
+			width:  pen - origin
 			height: line_height
 		}
 		y += line_height
@@ -1148,7 +1223,14 @@ fn tokenize_inline(content string, ws style.WhiteSpace) []string {
 	// collapses a run of them: `a  b` emits one space, not two, and a leading one is
 	// dropped rather than emitted, because out.len is still zero.
 	mut pending := false
-	for c in content {
+	// `runes()`, not the string itself: `for c in content` walks the *bytes*, and a
+	// Persian character is two of them. `rune(c).str()` on a byte turns that byte into the
+	// Latin-1 character of the same value, so "سلام" tokenized to "Ø³Ù„Ø§Ù…" -- six Latin
+	// characters -- which then measured, shaped and drew as Latin-1. The cast in the
+	// comment below was written to stop 'a' becoming "97" and it does that; what it also
+	// did, for every non-ASCII character on the page, was replace the letter with two
+	// pieces of another alphabet.
+	for c in content.runes() {
 		if c == ` ` || c == `\t` || c == `\r` {
 			if cur != '' {
 				out << cur
@@ -1192,11 +1274,10 @@ fn tokenize_inline(content string, ws style.WhiteSpace) []string {
 			out << ' '
 			pending = false
 		}
-		// `rune(c).str()`, not `c.str()`. On a `u8`, `str()` produces the *number* as
-		// text: 'a' becomes "97" and 'b' becomes "98", so "ab" tokenized to "9798" and a
-		// whole page rendered as its own ASCII codes. The cast is the whole difference
-		// between a character and its index.
-		cur += rune(c).str()
+		// `c.str()` on a `rune` is the character. On a `u8` it would be the *number*: 'a'
+		// becomes "97" and 'b' becomes "98", so "ab" tokenized to "9798" and a whole page
+		// rendered as its own ASCII codes.
+		cur += c.str()
 	}
 	if cur != '' {
 		out << cur
