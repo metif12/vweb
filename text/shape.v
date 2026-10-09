@@ -120,6 +120,15 @@ pub:
 	size    f64
 	sub_x   int // quarter pixels
 	sub_y   int
+	// cluster is the index of the character this glyph came from, in the string that
+	// was shaped. It is the only thing that says *which* character a glyph is: the
+	// bridge returns glyphs in visual order, and for a right-to-left run that is the
+	// reverse of the order they were written in, so nothing downstream can tell the
+	// first character of a line from the last without it.
+	//
+	// It is an index into the string handed to `shape`, which for layout is one
+	// segment of consecutive atoms and not the whole line.
+	cluster int
 pub mut:
 	bitmap vtext.GlyphBitmap
 }
@@ -163,6 +172,7 @@ fn (mut lib FontLibrary) place_glyphs(glyphs []vtext.Glyph, style &FontStyle, or
 			size:    style.size
 			sub_x:   quantise_subpixel(pen - f64(int(pen)))
 			sub_y:   0
+			cluster: int(g.cluster)
 		}
 	}
 	// Rasterize after the whole run is placed, so a glyph that repeats within one
