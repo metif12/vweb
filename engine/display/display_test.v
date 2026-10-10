@@ -1969,3 +1969,293 @@ fn test_no_float_leaves_every_line_unshortened() {
 	// A block that asked for nothing still fills the space it has.
 	assert word_box('', 'aa bb cc', 800).rect.width == 800
 }
+
+// --- position (CSS 2.1 9.3.2, 9.4.3, 9.6) ------------------------------------
+//
+// `position` does one of three things: does nothing (`static`), moves a box that
+// keeps its place in the flow (`relative`), or takes the box out of the flow
+// altogether (`absolute` and `fixed`). The two rules that carry all the weight are
+// 9.4.3 -- a relative box moves and nothing else does -- and 10.1: the containing
+// block an out-of-flow box is placed against is the *padding box* of the nearest
+// ancestor that is not `static`, or the initial containing block when there is no
+// such ancestor. `fixed` always uses the viewport.
+//
+// Everything asserted below is a rectangle, because a box drawn in the right order
+// at the wrong place is still wrong, and `tools/boxes.v` is what makes that visible
+// on a rendered page.
+
+// position_page builds body > a, holder > (x, o), b. `holder` is the ancestor under
+// test, `o` is the box being positioned, and `x` is the in-flow sibling that says what
+// the flow still has. `a` and `b` are in-flow blocks either side of the holder so the
+// tests can see that an out-of-flow `o` moved nothing at all.
+//
+// The viewport is 400 so that every number below is small enough to read: `a` is 20
+// tall, the holder starts at y=20, and its 10px of padding pushes its content to y=30.
+fn position_page(sheet string, width int) &Box {
+	mut body := el('body', '', '')
+	mut a := el('div', 'a', '')
+	attach(mut a, text_el('a'))
+	mut holder := el('div', 'holder', '')
+	mut x := el('div', 'x', '')
+	attach(mut x, text_el('x'))
+	mut o := el('div', 'o', '')
+	attach(mut o, text_el('overlay'))
+	attach(mut holder, x, o)
+	mut b := el('div', 'b', '')
+	attach(mut b, text_el('b'))
+	attach(mut body, a, holder, b)
+	return layouter(sheet, width).layout(body)
+}
+
+// The sheet every test below starts from: the holder is the positioned ancestor and
+// `o` is the absolutely positioned box.
+const holder_positioned = '#holder { position: relative; padding: 10px } '
+
+fn test_a_static_box_is_exactly_where_it_was() {
+	// The control for the whole section. `position: static` -- which is the initial
+	// value, so this is the page with no `position` declaration at all -- lays out
+	// exactly as it did before `position` existed, and every number here is the
+	// block layout of Phase 1: one 20px line each, stacked in document order with
+	// nothing taken out of the flow.
+	root := position_page('', 400)
+	assert box_for(root, 'o').rect.x == 0
+	assert box_for(root, 'o').rect.y == 40
+	assert box_for(root, 'x').rect.y == 20
+	assert box_for(root, 'holder').rect.height == 40
+	assert box_for(root, 'b').rect.y == 60
+}
+
+fn test_a_relative_box_keeps_its_place_and_moves() {
+	// CSS 2.1 9.4.3: the box is offset *after* it is laid out, so it keeps the space
+	// it took and its siblings do not move. This is the whole difference between
+	// `relative` and a margin, and the assertion on the sibling is the half that is
+	// easy to drop.
+	root := position_page(holder_positioned + '#x { position: relative; top: 10px; left: 20px }',
+		400)
+	moved := box_for(root, 'x')
+	// The static place is the holder's content box, which the 10px of left padding puts
+	// at x=10, and `left: 20px` moves it 20 further right from there.
+	assert moved.rect.x == 30
+	assert moved.rect.y == 40
+	// The box that follows it is where it would have been anyway: the moved box left
+	// its place behind it.
+	assert box_for(root, 'b').rect.y == 80
+	assert box_for(root, 'holder').rect.height == 60
+}
+
+fn test_a_relative_box_only_moves_by_the_insets_it_names() {
+	// `right` and `bottom` move a box the other way, and only the sides that were
+	// written move it: a box with `left` alone does not also shift vertically. The
+	// content box starts at x=10 under the holder's 10px of left padding, which is
+	// where both boxes below start from.
+	root := position_page(holder_positioned + '#x { position: relative; left: 15px }', 400)
+	moved := box_for(root, 'x')
+	assert moved.rect.x == 25
+	assert moved.rect.y == 30
+	// The other pair: 15 to the left is 5 to the left of the holder's own edge, and 5
+	// up is 5 above the static y=30.
+	up := position_page(holder_positioned + '#x { position: relative; right: 15px; bottom: 5px }',
+		400)
+	u := box_for(up, 'x')
+	assert u.rect.x == -5
+	assert u.rect.y == 25
+}
+
+fn test_an_absolute_box_is_placed_against_its_positioned_ancestor() {
+	// CSS 2.1 10.1: the containing block is the *padding box* of the nearest
+	// positioned ancestor. The holder is at (0,20) with 10px of padding, so its
+	// padding box starts at (0,20) and its content box at (0,30) -- and an absolute
+	// child with `top: 5px; left: 7px` lands 5 from the top of the *padding* box and
+	// 7 from its left edge, not from the content box.
+	root := position_page(holder_positioned + '#o { position: absolute; top: 5px; left: 7px; width: 40px; height: 30px }',
+		400)
+	o := box_for(root, 'o')
+	assert o.rect.x == 7
+	assert o.rect.y == 25
+	assert o.rect.width == 40
+	assert o.rect.height == 30
+}
+
+fn test_an_absolute_box_leaves_the_flow_alone() {
+	// Both halves of "out of flow", and the second is the one a page notices: the
+	// box does not advance the cursor, so the in-flow sibling after it keeps its
+	// place and the holder is no taller than the sibling it still has.
+	root := position_page(holder_positioned + '#o { position: absolute; top: 5px; left: 7px; width: 40px; height: 30px }',
+		400)
+	assert box_for(root, 'x').rect.y == 30
+	assert box_for(root, 'holder').rect.height == 40
+	assert box_for(root, 'b').rect.y == 60
+	// And the viewport-wide control: without `position` the same box is in the flow
+	// after `x` and pushes everything below it down by its own height.
+	inflow := position_page('', 400)
+	assert box_for(inflow, 'o').rect.y == 40
+	assert box_for(inflow, 'b').rect.y == 60
+}
+
+fn test_an_absolute_box_with_no_positioned_ancestor_uses_the_initial_containing_block() {
+	// The same box, in the same tree, with no positioned ancestor anywhere. The
+	// containing block is then the initial containing block -- the viewport itself --
+	// so the insets count from the top-left of the page and not from the holder.
+	root := position_page('#o { position: absolute; top: 5px; left: 7px; width: 40px; height: 30px }',
+		400)
+	o := box_for(root, 'o')
+	assert o.rect.x == 7
+	assert o.rect.y == 5
+	// The initial containing block is the viewport, so the same box measured against
+	// the *right* inset lands against the right edge of the page.
+	right := position_page('#o { position: absolute; right: 7px; bottom: 5px; width: 40px; height: 30px }',
+		400)
+	r := box_for(right, 'o')
+	assert r.rect.x == 400 - 7 - 40
+	// 400 wide and the layouter's 800 tall viewport, measured from its bottom edge.
+	assert r.rect.y == 800 - 5 - 30
+}
+
+fn test_position_fixed_uses_the_viewport_even_under_a_positioned_ancestor() {
+	// `fixed` is `absolute` with one rule changed: the containing block is the
+	// viewport, so a positioned ancestor above it does not apply. The holder here is
+	// 20px down the page with 10px of padding, which is what separates the two.
+	root := position_page(holder_positioned + '#o { position: fixed; top: 5px; left: 7px; width: 40px; height: 30px }',
+		400)
+	o := box_for(root, 'o')
+	assert o.rect.x == 7
+	assert o.rect.y == 5
+	// And it is still out of the flow: the sibling keeps its place.
+	assert box_for(root, 'x').rect.y == 30
+	assert box_for(root, 'b').rect.y == 60
+}
+
+fn test_an_absolute_box_with_auto_insets_sits_at_its_static_position() {
+	// CSS 2.1 10.3.7: when no inset says where the box goes, it goes where it would
+	// have gone in the flow. This is the part everyone forgets, and the page it
+	// breaks is one where an overlay is positioned only by `top` and inherits its
+	// horizontal place from the flow.
+	root := position_page(holder_positioned + '#o { position: absolute }', 400)
+	o := box_for(root, 'o')
+	// The static position is the holder's content box at the point the box occurs:
+	// 10 in from the left for the padding, and 20 below the top of the content box
+	// for the sibling ahead of it.
+	assert o.rect.x == 10
+	assert o.rect.y == 50
+	// Out of flow, so the holder is only as tall as the sibling it still has.
+	assert box_for(root, 'holder').rect.height == 40
+	// And with `top` written, only the horizontal place is still the static one.
+	shifted := position_page(holder_positioned + '#o { position: absolute; top: 40px }',
+		400)
+	s := box_for(shifted, 'o')
+	assert s.rect.x == 10
+	assert s.rect.y == 60
+}
+
+fn test_an_absolute_box_is_sized_by_two_opposite_insets() {
+	// CSS 2.1 10.3.7 rule 1: with `width: auto` and both `left` and `right` given,
+	// the box takes the space between them. The other side of the same rule, and the
+	// reason a `top:0; bottom:0` overlay fills its container.
+	root := position_page(holder_positioned + '#o { position: absolute; left: 10px; right: 20px; top: 0; bottom: 0 }',
+		400)
+	o := box_for(root, 'o')
+	holder := box_for(root, 'holder')
+	// 400 wide, less the two insets, less the box's own zero margins.
+	assert o.rect.x == 10
+	assert o.rect.width == 400 - 10 - 20
+	// The holder's padding box is 40 tall (one 20px line plus 10px of padding each
+	// side) and the box fills it exactly, because the insets are both zero.
+	assert o.rect.y == 20
+	assert o.rect.height == holder.rect.height
+}
+
+fn test_an_absolute_box_with_no_width_hugs_its_content() {
+	// The third case of the same rule, and the reason `place_atomic` exists: with no
+	// inset and no width the box is shrink-to-fit, so it is as wide as its own
+	// content and not as wide as the containing block it was placed against.
+	root := position_page(holder_positioned + '#o { position: absolute; top: 0; left: 0 }',
+		400)
+	o := box_for(root, 'o')
+	assert o.rect.x == 0
+	assert o.rect.y == 20
+	assert o.rect.width == o.max_content_width
+	assert o.rect.width < 400
+}
+
+fn test_a_percentage_inset_resolves_against_the_containing_block() {
+	// An inset that is a percentage is a fraction of the containing block's own
+	// padding box, which is the same class of assumption the relayout protocol of
+	// ARCHITECTURE.md section 5 exists for: the base has to be known before the
+	// fraction means anything. The layouter's viewport is 800 tall, so 25% of the
+	// holder's 40px padding box is 10.
+	root := position_page(holder_positioned + '#o { position: absolute; top: 25%; left: 12.5%; width: 40px; height: 30px }',
+		400)
+	o := box_for(root, 'o')
+	assert o.rect.y == 20 + 10
+	assert o.rect.x == 400 / 8
+}
+
+fn test_an_absolute_box_inside_another_absolute_box_uses_it_as_the_containing_block() {
+	// The containing block is the nearest positioned ancestor, so nesting two
+	// out-of-flow boxes re-anchors the inner one against the outer one's padding box.
+	mut body := el('body', '', '')
+	mut outer := el('div', 'outer', '')
+	mut inner := el('div', 'inner', '')
+	attach(mut outer, text_el('outer'))
+	attach(mut inner, text_el('inner'))
+	attach(mut outer, inner)
+	attach(mut body, outer)
+	root := layouter('#outer { position: absolute; top: 10px; left: 10px; width: 200px; padding: 12px } #inner { position: absolute; top: 4px; left: 5px; width: 30px; height: 30px }',
+		400).layout(body)
+	o := box_for(root, 'outer')
+	i := box_for(root, 'inner')
+	assert o.rect.x == 10
+	assert o.rect.y == 10
+	// The inner box counts from the outer one's *padding* box, which is the outer one's
+	// border box: the 12px of padding sits inside it rather than offsetting it. Reading
+	// the content box here would put the inner box 12 too far in.
+	assert i.rect.x == 10 + 5
+	assert i.rect.y == 10 + 4
+}
+
+fn test_a_percentage_inside_a_shrink_to_fit_absolute_box_is_not_measured_against_the_probe() {
+	// An absolute box with no width and no inset pairing is shrink-to-fit, so its width
+	// is *measured* -- and a percentage inside it is then a fraction of the very width
+	// being measured. This is the trap `place_atomic` fell into (measured: 500,000 in a
+	// 400px viewport for a 50% child) reached by another route: the probe lays the box
+	// out a million pixels wide, and the final width is the clamp, not the probe.
+	mut body := el('body', '', '')
+	mut holder := el('div', 'holder', '')
+	mut p := el('div', 'p', '')
+	mut q := el('div', 'q', '')
+	attach(mut q, text_el('hi'))
+	attach(mut p, q)
+	attach(mut holder, p)
+	attach(mut body, holder)
+	root := layouter(holder_positioned + '#p { position: absolute; top: 0; left: 0 } #q { width: 50% }',
+		400).layout(body)
+	pbox := box_for(root, 'p')
+	qbox := box_for(root, 'q')
+	// It hugs its own content, and the percentage resolved against the width it
+	// *finally got* rather than against the probe.
+	assert pbox.rect.width == pbox.max_content_width
+	assert qbox.rect.width == pbox.rect.width / 2
+}
+
+fn test_an_absolute_box_of_a_static_ancestor_still_finds_the_positioned_one() {
+	// The chain walk: the containing block is not the direct parent. Here the box is
+	// two levels down from the positioned holder, so it is placed against the holder
+	// even though a static div sits between them.
+	mut body := el('body', '', '')
+	mut holder := el('div', 'holder', '')
+	mut middle := el('div', 'middle', '')
+	mut o := el('div', 'o', '')
+	attach(mut middle, text_el('middle'))
+	attach(mut o, text_el('deep'))
+	attach(mut middle, o)
+	attach(mut holder, middle)
+	attach(mut body, holder)
+	root := layouter(holder_positioned + '#o { position: absolute; top: 3px; left: 4px; width: 30px; height: 30px }',
+		400).layout(body)
+	// The containing block is the holder's padding box, which starts where the holder's
+	// border box does -- the holder is the body's first child, so that is y=0, and the
+	// nearest *static* ancestor in the chain is not a candidate at all. The padding is
+	// inside the box the insets are measured against, not an offset from it.
+	assert box_for(root, 'o').rect.x == 4
+	assert box_for(root, 'o').rect.y == 3
+}

@@ -171,7 +171,8 @@ inline-block اتمی با همان قلم چیده می‌شود. دو محدو
 - گرامر کامل selector: type، class، id، universal، descendant، child، هر دو
   نوع sibling، attribute، pseudo-class
 - specificity، inheritance، `@media` پایه
-- `position: static|relative|absolute|fixed`، `z-index`
+- `position: static|relative|absolute|fixed`، `z-index` — **انجام شد**
+  (محدودیت‌هایش پایین‌تر)
 - `overflow`، `visibility`، `opacity`
 - `background` شامل تصویر با `stbi`، `repeat`، `position`، `size`
 - `border-radius`، همهٔ `border-*`
@@ -187,6 +188,40 @@ inline-block اتمی با همان قلم چیده می‌شود. دو محدو
 رد می‌شوند)، چندلایه (`background: url(a), url(b)`) فقط لایهٔ اول را می‌کشد، و
 `rem`/یکای ویوپورت در `background-size` و `background-position` با اندازهٔ قلم
 همین جعبه جواب داده می‌شود چون درخت جعبه قلم ریشه را حمل نمی‌کند.
+
+**محدودیت‌های ثبت‌شدهٔ `position` و `z-index`** (شاخهٔ `phase3-position`). آنچه
+کار شد: `position: static|relative|absolute|fixed`، `z-index: auto|<integer>`،
+چهار inset (`top|right|bottom|left: auto|<length>|<percentage>`)، بلوک‌شدن
+`display` برای عنصر بیرون از جریان (۹.۷)، containing block = **padding box**
+نزدیک‌ترین اجدادی که `static` نیست (یا initial containing block اگر نباشد)،
+`fixed` که همیشه ویوپورت است، fallback static position برای insetهای `auto`،
+اندازه‌گیری جعبه با دو inset مقابل، shrink-to-fit با پروتکل relayout، و ترتیب
+نقاشی: محتوای in-flow والد اول، بعد جعبه‌های position‌شده به ترتیب z-index با
+تساویِ ترتیبِ سند. آنچه *نشد*:
+
+- **استکینگ کانتکست ساختهٔ `opacity`/`transform`/`will-change` وجود ندارد**، پس
+  z-index فقط بین خواهرهای یک والد معنا دارد و یک `z-index` داخل یک زیردرخت
+  translucent روی لایهٔ بیرونی اثر نمی‌گذارد.
+- **الگوریتم کامل E.2 نیست**: گام ۲ (کانتکست‌های z-index منفی، که باید *پشت*
+  پس‌زمینهٔ والد رسم شوند) پیاده نشده، پس z-index منفی روی پس‌زمینهٔ والد می‌آید
+  نه زیرش؛ گام ۷ هم که فرزندِ position‌شدهٔ سازندهٔ کانتکست را جدا می‌گیرد نیست؛ و
+  ترتیب «inline قبل از float» درون گام‌های ۴ و ۵ رعایت نشده (اتم inline قبل از
+  بلوک‌های بعد از خودش کشیده می‌شود).
+- **تعامل absolute با float** نیست: جعبهٔ بیرون از جریان کنار یک شناور کشیده
+  نمی‌شود، و شناورها خطوط داخل آن را کوتاه نمی‌کنند چون floating لیستش به
+  `place_absolute` راه نمی‌دهد.
+- **عنصر inline با `position: relative`** جابه‌جا نمی‌شود: متنش در جعبهٔ
+  ناشناسِ والد جمع می‌شود و آن جعبه استایلش را از `text_style_of` می‌گیرد که
+  `position` را پاک می‌کند. CSS می‌گوید هر قطعهٔ inline جداگانه offset می‌خورد؛
+  اینجا هیچ‌کدام نمی‌خورند. (بلوک‌شدن `display` فقط برای absolute/fixed است،
+  نه relative.)
+- **insetهای درصدی با پایهٔ ارتفاع**: ارتفاع containing block وقتی از محتوا می‌آید
+  «definite» نیست، پس درصدش `auto` می‌شود (همان قانون CSS). افق همیشه با عرض
+  نهاییِ containing block حل می‌شود.
+- **`position: sticky` پذیرفته نمی‌شود** (در CSS 2.1 نیست)، پس جعبه `static`
+  می‌ماند و در جریان می‌نشیند.
+- **`height: auto` با `top` و `bottom`** از قاعدهٔ ۱۰.۶.۵ ارتفاع می‌گیرد، ولی
+  `min-height`/`max-height` روی آن اعمال نمی‌شود.
 
 **هشدار.** `float` واقعاً سخت است. Servo روی WPT مربوط به floats در ۱۸.۶٪
 است. جدول هم الگوریتم جداگانه است. اگر وقت کم آورد، **grid را حذف کن نه

@@ -55,6 +55,21 @@ pub fn (mut p Painter) paint(root &display.Box) {
 	p.box(root)
 }
 
+// box draws one box and its descendants, in the order CSS 2.1 Appendix E.2's painting
+// algorithm gives for the part of it this engine implements.
+//
+// The order inside one box: its own background, its borders, its decoration, its text,
+// then its in-flow content, then its positioned content. Parents before children, and
+// positioned boxes after the in-flow content of the box they sit in -- which is steps
+// 1, 3, 4, 5 and 6 of E.2.
+//
+// What is not here, stated rather than left to be discovered on a page: step 2 (child
+// stacking contexts with a negative z-index, which belong *behind* this box's own
+// background), step 7's separate treatment of a positioned descendant that establishes
+// a stacking context, and the inline-before-float ordering E.2 asks for within steps 4
+// and 5 -- this draws an atomic inline box before the in-flow blocks that follow it, in
+// tree order. A negative z-index therefore draws above the parent's background instead
+// of below it, and a page that relies on that will show it.
 fn (mut p Painter) box(b &display.Box) {
 	// `visibility: hidden` hides a box *and* its descendants, which is the difference
 	// from `display: none` that the two keywords exist to make. A display:none box
@@ -76,9 +91,62 @@ fn (mut p Painter) box(b &display.Box) {
 	for bx in b.atomics {
 		p.box(bx)
 	}
+	// The in-flow children, in document order.
 	for child in b.children {
+		if child.style.position == .static {
+			p.box(child)
+		}
+	}
+	// Then the positioned ones -- a relative box that kept its place in the flow, and
+	// every out-of-flow box this box is the containing block for -- in z-index order.
+	// That is what puts an overlay above the content it covers whatever the document
+	// order said, and it is E.2's step 6 rather than a special case.
+	for child in positioned_of(b) {
 		p.box(child)
 	}
+}
+
+// positioned_of returns the boxes of one parent that are positioned, in the order E.2
+// paints them: z-index first, document order between equals.
+//
+// The sort is a stable insertion sort rather than a library sort for two reasons, and
+// neither is speed. Stability *is* the specification -- equal z-index keeps document
+// order (E.2) -- and a comparison sort that is not provably stable would leave a golden
+// image depending on which V build made it.
+//
+// They come out of `children` rather than out of a separate list, so document order is
+// the order the document wrote them in: a relative box stays in the flow, where its
+// place in the tree is what the flow is, and an absolutely positioned one is stored
+// there too for the document order it carries.
+fn positioned_of(b &display.Box) []&display.Box {
+	mut out := []&display.Box{}
+	for child in b.children {
+		if child.style.position != .static {
+			out << child
+		}
+	}
+	mut i := 1
+	for i < out.len {
+		mut j := i
+		for j > 0 && z_of(out[j]) < z_of(out[j - 1]) {
+			tmp := out[j]
+			out[j] = out[j - 1]
+			out[j - 1] = tmp
+			j--
+		}
+		i++
+	}
+	return out
+}
+
+// z_of is the z-index a positioned box paints at. `auto` paints as zero, which is what
+// E.2 step 6 says: it belongs to the same group as `z-index: 0`, ordered by document
+// order rather than by a number the author never wrote.
+fn z_of(b &display.Box) int {
+	if b.style.z_index.auto {
+		return 0
+	}
+	return b.style.z_index.value
 }
 
 fn (mut p Painter) background(b &display.Box) {

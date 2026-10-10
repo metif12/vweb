@@ -399,6 +399,94 @@ fn test_a_floated_element_computes_display_block() {
 	assert style_of(author_engine('span { clear: left }'), el('span', '', ''), initial(), default_context()).display == .inline
 }
 
+// --- position, z-index and the insets (CSS 2.1 9.3.2, 9.7) -------------------
+
+fn test_position_and_z_index_parse() {
+	s := style_of(author_engine('div { position: absolute; z-index: 3; top: 5px; left: 10% }'),
+		el('div', '', ''), initial(), default_context())
+	assert s.position == .absolute
+	assert s.z_index.auto == false
+	assert s.z_index.value == 3
+	assert s.insets.top.value == 5.0
+	assert s.insets.top.unit == .px
+	assert s.insets.left.unit == .percent
+	// `right` and `bottom` reach the same struct, and a side that was never written is
+	// still `auto` rather than zero -- the difference between "this side names no
+	// position" and "this side names the edge" is the whole of CSS 2.1 10.3.7.
+	assert s.insets.right.unit == .auto
+	assert s.insets.bottom.unit == .auto
+	assert style_of(author_engine('div { position: fixed }'), el('div', '', ''), initial(),
+		default_context()).position == .fixed
+	assert style_of(author_engine('div { position: relative }'), el('div', '', ''), initial(),
+		default_context()).position == .relative
+	// A negative z-index is valid: it is what CSS 2.1 Appendix E.2 step 2 puts behind
+	// the parent's background, and clamping it to zero would drop that case entirely.
+	assert style_of(author_engine('div { z-index: -2 }'), el('div', '', ''), initial(),
+		default_context()).z_index.value == -2
+}
+
+fn test_position_defaults_to_static_and_z_index_to_auto() {
+	// The initial values, stated rather than assumed: `static` is what makes every
+	// existing layout unchanged, and `auto` is not zero -- it is "the author never
+	// numbered me", which is what keeps a positioned box in E.2's step 6.
+	s := initial()
+	assert s.position == .static
+	assert s.z_index.auto
+	assert s.insets.top.unit == .auto
+	assert s.insets.left.unit == .auto
+	// `Edges{}` would have been `unit: .none`, which is "not a length" rather than
+	// `auto`, and an inset of `none` would have read as no inset at all.
+	assert s.insets.top.is_auto()
+}
+
+fn test_an_unknown_position_is_dropped_not_defaulted() {
+	// `position: sticky` is not in CSS 2.1. Refusing it leaves the box `static` and in
+	// the flow, which is the conservative direction; reading it as `relative` would
+	// have applied its offset permanently, which CSS says should only happen while the
+	// box is stuck.
+	s := style_of(author_engine('div { position: sticky; top: 4px }'), el('div', '', ''),
+		initial(), default_context())
+	assert s.position == .static
+	// And a nonsense z-index must not be read as 0-by-auto either: `2.5` is a typo.
+	assert style_of(author_engine('div { z-index: 2.5 }'), el('div', '', ''), initial(),
+		default_context()).z_index.auto
+}
+
+fn test_position_and_the_insets_are_not_inherited() {
+	// CSS 2.1 9.3.2 marks all four insets "Inherited: no", and `position` and `z-index`
+	// the same. This is a deliberate reading rather than a guess: an inset that
+	// travelled down the tree would give every absolutely positioned descendant of a
+	// `top: 0` box an offset its own stylesheet never asked for.
+	//
+	// `insets` inheriting is also what a shorthand reading of the property invites --
+	// `margin` and `padding` are not inherited either, and the four insets are the same
+	// shape -- and it is recorded here so that adding it later is a visible break.
+	mut parent := initial()
+	parent.position = .relative
+	parent.z_index = ZIndex{ value: 5 }
+	parent.insets.top = Length{ value: 30.0, unit: .px }
+	s := style_of(author_engine(''), el('span', '', ''), parent, default_context())
+	assert s.position == .static
+	assert s.z_index.auto
+	assert s.insets.top.is_auto()
+}
+
+fn test_an_absolutely_positioned_element_computes_display_block() {
+	// CSS 2.1 9.7: the same rule as a float, for the same structural reason. An
+	// out-of-flow box is not inline-level, so it cannot be collected into a line of its
+	// parent's inline content and then positioned against a containing block it has
+	// already been placed inside.
+	s := style_of(author_engine('span { position: absolute }'), el('span', '', ''), initial(),
+		default_context())
+	assert s.display == .block
+	// `display: none` still wins: generating no boxes at all beats being positioned.
+	assert style_of(author_engine('span { display: none; position: absolute }'), el('span', '', ''),
+		initial(), default_context()).display == .none
+	// And without a position, a span is still inline.
+	assert style_of(author_engine('span { z-index: 4 }'), el('span', '', ''), initial(),
+		default_context()).display == .inline
+}
+
 // --- shorthands -------------------------------------------------------------
 
 // assert_edges checks all four sides at once, because a shorthand that fills three

@@ -317,13 +317,14 @@ const supported_properties = ['background', 'background-color', 'background-imag
 	'border-style', 'border-width', 'border-top', 'border-right', 'border-bottom', 'border-left',
 	'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
 	'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
-	'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+	'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'bottom',
 	'box-sizing', 'clear', 'color', 'display', 'direction', 'float', 'font-family', 'font-size',
-	'font-style', 'font-weight', 'height', 'line-height', 'list-style-position', 'list-style-type',
-	'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'max-height',
-	'max-width', 'min-height', 'min-width', 'opacity', 'padding', 'padding-top', 'padding-right',
-	'padding-bottom', 'padding-left', 'text-align', 'text-decoration', 'text-transform',
-	'vertical-align', 'visibility', 'white-space', 'width']
+	'font-style', 'font-weight', 'height', 'left', 'line-height', 'list-style-position',
+	'list-style-type', 'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+	'max-height', 'max-width', 'min-height', 'min-width', 'opacity', 'padding', 'padding-top',
+	'padding-right', 'padding-bottom', 'padding-left', 'position', 'right', 'text-align',
+	'text-decoration', 'text-transform', 'top', 'vertical-align', 'visibility', 'white-space',
+	'width', 'z-index']
 
 // supports_property reports whether the cascade can act on a property at all.
 pub fn supports_property(name string) bool {
@@ -589,8 +590,15 @@ pub fn (e &Engine) compute(el &html.Tag, parent &Style, ctx &Context, state &sel
 	// generates no boxes at all is not made to generate them by being floated.
 	//
 	// The `position` half of 9.7 -- an absolutely positioned element also computes
-	// `display` to `block` -- is not here because there is no `position` yet.
+	// `display` to `block` -- is the same rule for the same reason: an out-of-flow box
+	// is not inline-level either, so it cannot be collected into a line of its parent's
+	// text. Without it a `position: absolute` `<span>` would be laid out as an
+	// anonymous box of its parent's inline content and then positioned against a
+	// containing block it has already been placed inside.
 	if s.float != .none && s.display != .none {
+		s.display = .block
+	}
+	if (s.position == .absolute || s.position == .fixed) && s.display != .none {
 		s.display = .block
 	}
 	return s
@@ -658,6 +666,15 @@ pub fn (mut s Style) apply(decl Declaration, ctx &Context) {
 		'visibility' { s.visibility = parse_visibility(v) or { return } }
 		'float' { s.float = parse_float(v) or { return } }
 		'clear' { s.clear = parse_clear(v) or { return } }
+		'position' { s.position = parse_position(v) or { return } }
+		'z-index' { s.z_index = parse_z_index(v) or { return } }
+		// The four insets share `set_edge` with the margin and the padding longhands
+		// because they are the same shape of value -- a length, a percentage or `auto`
+		// per side -- and `side_index` already names the side in both `top` and
+		// `border-top-width` shapes.
+		'top', 'right', 'bottom', 'left' {
+			s.insets = set_edge(s.insets, v, side_index(decl.decl.name)) or { return }
+		}
 		'margin-top', 'margin-right', 'margin-bottom', 'margin-left' {
 			s.margin = set_edge(s.margin, v, side_index(decl.decl.name)) or { return }
 		}
@@ -708,7 +725,25 @@ pub fn (mut s Style) apply(decl Declaration, ctx &Context) {
 // end and `border-top-width` puts it in the middle. Matching only the first shape
 // returns -1 for every border longhand, which is an out-of-range write rather than an
 // error -- the kind that shows up much later as a wrong pixel.
+//
+// The insets are the bare side names, and they have to be matched before the two
+// composed shapes or they match neither: `top` does not end with `-top` and does not
+// contain `-top-`, so without the first four lines every inset would return -1,
+// `set_edge` would refuse it, and the declaration would be dropped with no error at
+// all. That is exactly what happened: the box lay out as if no inset had been written.
 fn side_index(name string) int {
+	if name == 'top' {
+		return 0
+	}
+	if name == 'right' {
+		return 1
+	}
+	if name == 'bottom' {
+		return 2
+	}
+	if name == 'left' {
+		return 3
+	}
 	if name.ends_with('-top') || name.contains('-top-') {
 		return 0
 	}
