@@ -61,6 +61,13 @@ pub mut:
 	text_transform      TextTransform
 	opacity             f64
 	visibility          Visibility
+	// `float` and `clear` are the two halves of CSS 2.1 9.5, and both are initial
+	// values rather than inherited ones: a floated element's children are laid out in
+	// the normal flow, and an element that asks to clear the left does not clear it
+	// for its descendants. A field that inherited would take out of flow every box
+	// below the one that was floated.
+	float Float
+	clear Clear
 }
 
 pub enum Display {
@@ -173,6 +180,21 @@ pub enum Visibility {
 	collapse
 }
 
+// Float is which side, if any, a box is taken out of the flow and pushed against.
+pub enum Float {
+	left
+	right
+	none
+}
+
+// Clear is which sides' earlier floats a box must be pushed below.
+pub enum Clear {
+	left
+	right
+	both
+	none
+}
+
 // Edges is the four sides of a box, in CSS order. An array rather than four named
 // fields because every property that has four sides has the same shorthand syntax,
 // and a named field per side would make the shorthand parser four times longer.
@@ -219,6 +241,8 @@ pub fn initial() Style {
 		text_transform:      .none
 		opacity:             1.0
 		visibility:          .visible
+		float:               .none
+		clear:               .none
 	}
 }
 

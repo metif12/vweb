@@ -115,7 +115,13 @@ pub mut:
 	// every level, once per level.
 	max_content_width int
 	min_content_width int
-	children          []&Box
+	// float_margin is the margin box of a *floated* box: the area it keeps for itself
+	// around its border box, which is what a line beside it has to avoid -- CSS 2.1 9.5
+	// says the margin box, not the border box. It is stored rather than computed on the
+	// spot because `place_float` resolves the margins once against the containing width
+	// it was given, and `line_gap` has no context to resolve them again.
+	float_margin Rect
+	children     []&Box
 	// atomics are this block's atomic inline-level boxes (inline-block). They are not in
 	// children, because their position comes from the line layout rather than from block
 	// layout: they sit *inside* a line, at the point the line breaker put them.
@@ -159,7 +165,14 @@ pub fn (mut l Layouter) layout(root &html.Tag) &Box {
 
 	mut b := l.build(root, root_style, &ctx)
 	b.style.margin = style.Edges{}
-	l.place(mut b, l.viewport_width, 0, 0, false)
+	// The floats of the flow `b` is in, in the order they are laid out. `place` appends
+	// to it as it walks the tree -- a float belongs to the flow of the block it is in,
+	// and a nested block is not a flow of its own -- and reads it to know which lines
+	// to shorten and which boxes to clear. It is threaded rather than kept on the
+	// Layouter because Layouter is reused: a field holding floats from a previous
+	// viewport would shorten lines on the next one by boxes that are no longer there.
+	mut floats := []&Box{}
+	l.place(mut b, l.viewport_width, 0, 0, false, mut floats)
 	return b
 }
 
@@ -460,6 +473,19 @@ fn text_style_of(parent style.Style) style.Style {
 	s.border_style = no_border
 	s.margin = style.Edges{}
 	s.padding = style.Edges{}
+	// And `float` and `clear` go with them, for the same reason twice over. An
+	// anonymous box has no element of its own, so it cannot be floated, and the copy is
+	// of a style that *was* floated -- which is what happens inside a floated box, whose
+	// text is collected into one anonymous box. Leaving the property on it made the
+	// anonymous box a float inside its own parent's float, which recursed.
+	s.float = .none
+	s.clear = .none
+	// `display` too, because the style is copied from whatever block the text sits in and
+	// that is not what the anonymous box is: a flow root's own inline content is part of
+	// the flow root's flow, so an anonymous box inside it that carried `flow-root` would
+	// start a new formatting context of its own and hide the very lines the float has to
+	// shorten. The box holds inline content and lays it out, which is what `block` says.
+	s.display = .block
 	return s
 }
 
@@ -469,8 +495,10 @@ fn text_style_of(parent style.Style) style.Style {
 // collapsed top margin, because a collapsed margin is the caller's arithmetic to do and
 // two places doing it is how it got counted twice. `bottom_escapes` says whether this
 // box's bottom margin may collapse with the one below it, which decides whether the
-// caller subtracts it from the height it gets back.
-fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom_escapes bool) int {
+// caller subtracts it from the height it gets back. `floats` are the floats generated
+// so far in this flow, and `place` appends the ones it generates to it.
+fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom_escapes bool,
+	mut floats []&Box) int {
 	s := b.style
 	ctx := l.context(b.font_size)
 	mut margin := edges_of(s.margin, &ctx, f64(containing_width))
@@ -545,10 +573,42 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		if !first {
 			top = max_of(previous_bottom, cm.top)
 		}
+		if cs.float != .none {
+			// A floated box is out of the flow, and both halves of that are rules rather
+			// than a consequence of the data structure. It does not collapse its margins
+			// with a sibling's -- margins of floating boxes never collapse, CSS 2.1 9.5.1
+			// -- and it does not advance the cursor, so the box that follows it is laid
+			// out where it would have been anyway. That second half is the visible one:
+			// it is the difference between text wrapping beside a float and text pushed
+			// below it.
+			at := cursor + cm.top
+			l.place_float(mut child, content_width, content_x, at + clear_push(floats, cs.clear,
+				at), mut floats)
+			// The next sibling is no longer the first, but a float leaves no bottom
+			// margin behind it: it does not participate in collapsing, so `previous_bottom`
+			// must keep whatever the last in-flow box left.
+			first = false
+			i++
+			continue
+		}
 		cursor += top
+		// `clear` is the one property that moves a box below a float, and it is applied
+		// to the position the collapsing settled on: the clearance is how much further
+		// the box must move for its border box top to be below the bottom of every
+		// earlier float on the sides it names (CSS 2.1 9.5.2).
+		cursor += clear_push(floats, cs.clear, cursor)
 		// Only an only-child box can collapse through to its parent's edge.
 		is_last := b.children.len == 1
-		cursor += l.place(mut child, content_width, content_x, cursor, is_last)
+		if cs.display == .flow_root {
+			// A flow root is a new block formatting context (CSS 2.1 9.4.1), so the
+			// floats generated inside it shorten the lines inside it and nothing outside
+			// it. That is the whole of what `display: flow-root` is for, and it is the
+			// one difference between it and a plain block.
+			mut inner := []&Box{}
+			cursor += l.place(mut child, content_width, content_x, cursor, is_last, mut inner)
+		} else {
+			cursor += l.place(mut child, content_width, content_x, cursor, is_last, mut floats)
+		}
 		previous_bottom = cm.bottom
 		first = false
 		i++
@@ -566,7 +626,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	}
 
 	if b.text != '' {
-		lines := l.layout_runs(mut b, &ctx, content_x, content_y, content_width)
+		lines := l.layout_runs(mut b, &ctx, content_x, content_y, content_width, floats)
 		b.line_count = lines.len
 		// One flat list rather than a list per line: paint draws glyphs, not lines, and
 		// a caller asking "where is the text of this box" wants every glyph in one
@@ -707,7 +767,7 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// An explicit width is left to `box_width`, where it was already right, and there is
 	// nothing to relayout: the width is the fact.
 	if bx.style.width.unit != .auto && bx.style.width.unit != .none {
-		l.place(mut bx, line_width, x, y, false)
+		l.place_root(mut bx, line_width, x, y)
 		return
 	}
 	bx_ctx := l.context(bx.font_size)
@@ -724,7 +784,7 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// really going to get, an atomic inside it would already have shrunk itself to that
 	// width, and this box's max-content would be measured as the space it was given
 	// rather than as the width of its content.
-	l.place(mut bx, unbreakable_width, x, y, false)
+	l.place_root(mut bx, unbreakable_width, x, y)
 	// The margins are handed back as containing width so that `place`'s own `available`
 	// comes out as `fitted` less the frame, and its rect as `fitted`.
 	mut assumed := atomic_fit(bx, available) + bx_margin.left + bx_margin.right
@@ -734,7 +794,7 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// the width the pass just used was an assumption, and this is the fact that replaces
 	// it. A pass whose own answer is the width it already used is the final layout.
 	for pass := 1; pass < max_relayout_passes; pass++ {
-		l.place(mut bx, assumed, x, y, false)
+		l.place_root(mut bx, assumed, x, y)
 		next := atomic_fit(bx, available) + bx_margin.left + bx_margin.right
 		if next == assumed {
 			return
@@ -744,7 +804,233 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// The ceiling. Every pass changed the answer, so stop with the width we settled on
 	// rather than moving again: a resolution that has not stabilised in `max_relayout_passes`
 	// passes is a cycle, and the last width is the deterministic one to keep.
-	l.place(mut bx, assumed, x, y, false)
+	l.place_root(mut bx, assumed, x, y)
+}
+
+// place_root lays out a box that starts a block formatting context of its own, which
+// is what an atomic inline-level box is (CSS 2.1 9.4.1). The floats generated inside it
+// do not reach the lines outside it, and the floats outside it do not shorten the lines
+// inside it, so the empty list handed to `place` is that boundary made concrete.
+//
+// Without it a float inside an inline-block would shorten the paragraph around it, and
+// a line inside an inline-block would wrap around a float in the paragraph that holds
+// it -- neither of which is true, and both of which look like a bug in the float.
+fn (mut l Layouter) place_root(mut b &Box, containing_width int, x int, y int) {
+	mut inner := []&Box{}
+	l.place(mut b, containing_width, x, y, false, mut inner)
+}
+
+// place_float lays out one floated box and records it in `floats`.
+//
+// CSS 2.1 9.5.1 positions a float against the outer edge of its own side, either to the
+// right of every earlier float on that side or below it. How much of the line is left
+// depends on where the earlier floats are, and the float's own height is not known until
+// it has been laid out, so this is a bounded iteration: at each attempt the gap is
+// measured at the candidate top, the float is laid out in that gap, and if the result
+// either does not fit in the gap or overlaps an earlier float, the candidate top drops
+// below the float in the way and the gap is measured again.
+//
+// The height that is measured against at each attempt is one pixel -- see
+// `placement_gap` -- because the floats that can block the new one are exactly the ones
+// covering its top edge.
+fn (mut l Layouter) place_float(mut f &Box, containing_width int, x int, y int, mut floats []&Box) {
+	right_side := f.style.float == .right
+	ctx := l.context(f.font_size)
+	fm := edges_of(f.style.margin, &ctx, f64(containing_width))
+	mut top := y
+	// Every failed attempt drops the float below at least one earlier float, so
+	// `floats.len + 1` attempts settle any cascade of them. The bound is derived from
+	// what can happen rather than being a number chosen to look safe: a fixed ceiling
+	// would be a guess about how many floats a page can have.
+	for _ in 0 .. floats.len + 1 {
+		// `containing_width` is the content box's width, and the gap it takes is the
+		// interval from `x` to the right edge of that box.
+		gap := placement_gap(floats, top, x, x + containing_width)
+		mut space := gap.span() - fm.left - fm.right
+		if space < 0 {
+			space = 0
+		}
+		// Laid out through `place_atomic` because `width: auto` on a float is
+		// shrink-to-fit (CSS 2.1 10.3.8) and not the fill the same `auto` gives a block:
+		// a pull-quote box has to hug its text. The first call is at the gap's left edge,
+		// because that is where the width is decided, and a right float is then placed at
+		// its own edge -- the gap's right edge less the width it turned out to need -- with
+		// a second call, because its own content has to be laid out where it will be
+		// drawn and not where it was measured.
+		l.place_atomic(mut f, space, gap.left, top)
+		mut fx := gap.left
+		if right_side {
+			// `place` offsets the border box by the box's own left margin, so the x it is
+			// given is the *margin box's* left edge.
+			fx = gap.right - f.rect.width - fm.left - fm.right
+		}
+		if fx != gap.left {
+			l.place_atomic(mut f, space, fx, top)
+		}
+		// The two things that make a position wrong: not fitting in the gap, and
+		// overlapping an earlier float. Both are checked on the margin box against the
+		// gap's span, because that is what the line beside it has to give up.
+		if fm.left + f.rect.width + fm.right <= gap.span() && !float_conflicts(floats, f.rect) {
+			record_float(mut floats, mut f, fm)
+			return
+		}
+		top = drop_below(floats, top, right_side)
+	}
+	// The bound. Nothing settled, so the float keeps the last position it was laid out
+	// at and is still recorded: a line after it shortens around it rather than running
+	// under it, and that is the smaller of the two errors available here.
+	record_float(mut floats, mut f, fm)
+}
+
+// record_float writes the margin box a float keeps, and adds it to the flow's list.
+fn record_float(mut floats []&Box, mut f &Box, fm Px4) {
+	f.float_margin = Rect{
+		x:      f.rect.x - fm.left
+		y:      f.rect.y - fm.top
+		width:  f.rect.width + fm.left + fm.right
+		height: f.rect.height + fm.top + fm.bottom
+	}
+	floats << f
+}
+
+// clear_push is how much further a box must move down for its border box top to be
+// below the bottom of every earlier float on the sides `clear` names.
+//
+// It is measured from the position the box has already reached -- margins and collapsing
+// included -- and not as an offset from the float's own top, which is why a box below a
+// taller float is pushed by the difference and not by the float's whole height. What is
+// not here is CSS 2.1 9.5.2's rule that a clearance can be negative and pull a box up:
+// nothing in this layout produces one, and a negative clamp would be a guess about a
+// case that cannot happen yet.
+fn clear_push(floats []&Box, clear style.Clear, at int) int {
+	if clear == .none {
+		return 0
+	}
+	mut limit := at
+	for f in floats {
+		// `clear` is named for the side the float is on, not for the side the box moves
+		// to: a float on the right pushes a box down and it is still laid out on the
+		// left, so `clear: left` does not see it.
+		if clear == .left && f.style.float != .left {
+			continue
+		}
+		if clear == .right && f.style.float != .right {
+			continue
+		}
+		bottom := f.rect.y + f.rect.height
+		if bottom > limit {
+			limit = bottom
+		}
+	}
+	if limit <= at {
+		return 0
+	}
+	return limit - at
+}
+
+// drop_below is the next top position to try: the bottom of the earliest float on
+// `right_side`'s own side that covers `top`. It is that side and not any float, because
+// a float on the opposite side only narrows the line from the other end and can still
+// leave room beside it.
+fn drop_below(floats []&Box, top int, right_side bool) int {
+	mut to := top
+	for f in floats {
+		// A float on the opposite side only narrows the line from the other end and can
+		// still leave room beside it, so it is not what a float on this side drops below.
+		if (f.style.float == .left) == right_side {
+			continue
+		}
+		if f.rect.y > top || f.rect.y + f.rect.height <= top {
+			continue
+		}
+		if f.rect.y + f.rect.height > to {
+			to = f.rect.y + f.rect.height
+		}
+	}
+	return to
+}
+
+// float_conflicts reports whether `r` overlaps a float already laid out. CSS 2.1 9.5.1
+// rule 2 forbids a floating box overlapping an earlier float in the same flow, on either
+// side: a float that overlaps one is moved, never stacked on it.
+fn float_conflicts(floats []&Box, r Rect) bool {
+	for f in floats {
+		if overlaps(r, f.rect) {
+			return true
+		}
+	}
+	return false
+}
+
+fn overlaps(a Rect, b Rect) bool {
+	return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height
+		&& b.y < a.y + a.height
+}
+
+// LineGap is the interval of a line that no earlier float covers, in absolute
+// coordinates. CSS 2.1 9.5's "a line box beside a floating box is shortened to avoid it"
+// is arithmetic once the floats have rectangles: the line fills what is left between the
+// nearest float on each side, and a line with no float over it takes the whole width.
+struct LineGap {
+pub mut:
+	left  int
+	right int
+}
+
+fn (g LineGap) span() int {
+	w := g.right - g.left
+	if w < 0 {
+		return 0
+	}
+	return w
+}
+
+// line_gap returns the interval of the line that starts at `top` and is `height` tall,
+// with every float overlapping that vertical range pushed out of it.
+//
+// What is pushed out is the float's *margin* box, not its border box: a floated box with
+// `margin-right: 8px` keeps that 8px, and a line beside it starts 8px to the right of the
+// box's right edge rather than touching it. CSS 2.1 9.5 says the margin box, and a page
+// that puts a margin on a floated image is an ordinary page.
+//
+// A float that ends exactly at the top of the line is not in the way, and one that
+// starts exactly at its bottom is not either: the comparison is half-open, so a float
+// adjacent to a line shares an edge with it rather than shortening it.
+fn line_gap(floats []&Box, top int, height int, left int, right int) LineGap {
+	mut g := LineGap{
+		left:  left
+		right: right
+	}
+	for f in floats {
+		// `float_margin` is what the float keeps, and it is set by `place_float` before
+		// the box is recorded -- so it is always the margin box of a laid-out float and
+		// never the zero value of an unpositioned one.
+		fr := f.float_margin
+		if fr.y >= top + height || fr.y + fr.height <= top {
+			continue
+		}
+		if f.style.float == .left {
+			if fr.x + fr.width > g.left {
+				g.left = fr.x + fr.width
+			}
+		} else {
+			if fr.x < g.right {
+				g.right = fr.x
+			}
+		}
+	}
+	return g
+}
+
+// placement_gap is the gap measured for a float about to be positioned, and the one
+// pixel of line height is the whole trick. A float belongs to a line when the two
+// overlap, and the float's own height is not known before it is laid out -- so the
+// question asked here is "which floats cover this top edge", which is the question that
+// needs answering: floats are laid out in source order and the vertical cursor only
+// moves down, so every earlier float that could overlap the new one also covers its top
+// edge.
+fn placement_gap(floats []&Box, top int, left int, right int) LineGap {
+	return line_gap(floats, top, 1, left, right)
 }
 
 // zero_width_sides applies the used border-width rule of CSS 2.1 10.3.3: a side whose
@@ -1077,8 +1363,7 @@ struct Segment {
 // how tall the first line is. It used to pass one computed from the *box's* metrics, and
 // that is why a 28px run in a 16px paragraph overlapped its neighbours.
 fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, content_y int,
-	content_width int) []LaidLine {
-	max_w := wrap_width(b.style.white_space, content_width)
+	content_width int, floats []&Box) []LaidLine {
 	// Right to left comes from the box's computed `direction`, which CSS inherits, so an
 	// ancestor's `direction: rtl` reaches the text inside it.
 	//
@@ -1141,17 +1426,35 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 	b.max_content_width = int(math.ceil(mx))
 	b.min_content_width = int(math.ceil(mn))
 
-	// Greedy fill. A space never starts a line and never causes one, so the break is taken
-	// before the word that would not fit rather than after the space before it.
-	mut lines := [][]Atom{}
+	// Greedy fill and shaping in one pass, where they used to be two passes over the same
+	// atoms. They cannot be separate any more: the width a line may fill is not a
+	// constant now that a line beside a float is shortened by it, so which atoms belong
+	// to a line depends on the line's own y -- and a line's y is only known after the
+	// lines above it have been shaped and reported their heights.
+	//
+	// The height the gap is measured against is the box's own line height, which is the
+	// height every line has while all its runs are at the box's own size. A line
+	// carrying a larger run is taller than that and could overlap a float it was not
+	// measured against; the alternative is to shape the line, measure it and shape it
+	// again, which is more machinery than that case is worth.
+	own_style := font_style_of(b.style, b.font_size, ctx)
+	own_line := px(l.fonts.line_metrics(&own_style).line_height)
 	mut cur := []Atom{}
 	mut w := 0.0
+	mut line_top := content_y
+	mut gap := line_gap(floats, line_top, own_line, content_x, content_width)
+	mut out := []LaidLine{}
 	for a in atoms {
 		if a.space && cur.len == 0 {
 			continue
 		}
-		if !a.space && cur.len > 0 && w + a.width > max_w {
-			lines << cur
+		// A space never starts a line and never causes one, so the break is taken before
+		// the word that would not fit rather than after the space before it.
+		if !a.space && cur.len > 0 && w + a.width > wrap_width(b.style.white_space, gap.span()) {
+			line, next_top := l.shape_line(mut b, ctx, cur, gap, line_top, rtl)
+			out << line
+			line_top = next_top
+			gap = line_gap(floats, line_top, own_line, content_x, content_width)
 			cur = []
 			w = 0.0
 		}
@@ -1159,125 +1462,130 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 		w += a.width
 	}
 	if cur.len > 0 {
-		lines << cur
-	}
-
-	// Shape each line. Consecutive atoms of the same run are shaped as one string, so a
-	// word spanning two atoms still joins and shapes as a word.
-	// Half-leading, CSS 2.1 10.8.1: each item's leading is split half above and half below
-	// its own text, so a line box is as tall as the tallest item on it plus that item's
-	// half-leading. `line_has_run` keeps a 28px run on the second line from inflating the
-	// first.
-	mut out := []LaidLine{cap: lines.len}
-	mut y := content_y
-	for line_atoms in lines {
-		// Iterating the atoms on this line directly, rather than every run in the box, is
-		// what keeps a 28px run on the second line from inflating the first.
-		mut above := 0.0
-		mut below := 0.0
-		for a in line_atoms {
-			if a.is_box {
-				// An atomic box sits on the baseline: its bottom margin edge is the line's
-				// baseline, which is `vertical-align: baseline` for inline-block. So its
-				// whole height is above the baseline and none of it below.
-				above = fmax(above, f64(a.box.rect.height))
-				continue
-			}
-			rs := font_style_of(b.runs[a.run].style, b.runs[a.run].font_size, ctx)
-			m := l.fonts.line_metrics(&rs)
-			half := (m.line_height - (m.ascent + m.descent)) / 2.0
-			above = fmax(above, m.ascent + half)
-			below = fmax(below, m.descent + half)
-		}
-		line_height := px(above + below)
-		baseline := f64(y) + above
-		// The line's segments, in source order. Consecutive atoms of one run are joined
-		// into a single segment, so a word spanning two atoms still joins and shapes as a
-		// word. They are collected before any of them is placed because a right-to-left
-		// line has to know the width of every segment before it can put the first one
-		// down: its pen starts at the right edge, not the left.
-		mut segs := []Segment{}
-		mut i := 0
-		for i < line_atoms.len {
-			if line_atoms[i].is_box {
-				segs << Segment{
-					is_box: true
-					width:  line_atoms[i].width
-					box:    line_atoms[i].box
-				}
-				i++
-				continue
-			}
-			mut j := i
-			mut sb := strings.new_builder(32)
-			for j < line_atoms.len && line_atoms[j].run == line_atoms[i].run {
-				sb.write_string(line_atoms[j].content)
-				j++
-			}
-			r := b.runs[line_atoms[i].run]
-			run_style := font_style_of(r.style, r.font_size, ctx)
-			// Read once: `Builder.str()` clears the builder, so a second call on the
-			// same one answers with the empty string and the segment would be shaped as
-			// nothing at all -- which is a line that silently loses its text.
-			seg_str := sb.str()
-			mut seg_w := 0.0
-			for k in i .. j {
-				seg_w += line_atoms[k].width
-			}
-			if rtl {
-				// The atoms' widths are each word measured on its own, and Arabic joining
-				// makes a word a different width when it is shaped with its neighbours than
-				// when it is shaped alone. Both directions are measured: on the default face
-				// the sentence these tests break into lines came to 150.09 by its atoms
-				// where it drew 125.89, and 145.60 where it drew 143.36; on the face these
-				// tests ask for, the two agree to the last decimal. Neither can be relied
-				// on, so the segment is measured the way the shaper will draw it and the
-				// line is anchored by that -- otherwise the ink ends short of the right edge
-				// by exactly the difference the font happens to introduce.
-				seg_w = l.fonts.advance(&run_style, seg_str)
-			}
-			segs << Segment{
-				text:  seg_str
-				style: run_style
-				width: seg_w
-			}
-			i = j
-		}
-		// The pen. Left to right it starts at the content box's left edge and walks right,
-		// which is what it has always done. Right to left it starts one line width in from
-		// the right edge and the same segments are then walked left to right from there, so
-		// the first thing written is the rightmost thing drawn, a line shorter than the box
-		// sits flush against the right edge, and an atomic box is placed by the same pen.
-		mut pen := f64(content_x)
-		if rtl {
-			mut total := 0.0
-			for s in segs {
-				total += s.width
-			}
-			pen = f64(content_x + content_width) - total
-		}
-		origin := pen
-		mut glyphs := []text.PositionedGlyph{}
-		for s in segs {
-			if s.is_box {
-				mut bx := s.box
-				bx.rect.x = int(pen)
-				bx.rect.y = int(baseline) - bx.rect.height
-				pen += s.width
-				continue
-			}
-			st := s.style
-			glyphs << l.fonts.shape(s.text, &st, pen, baseline)
-			pen += s.width
-		}
-		out << LaidLine{
-			glyphs: glyphs
-			width:  pen - origin
-			height: line_height
-		}
-		y += line_height
+		line, _ := l.shape_line(mut b, ctx, cur, gap, line_top, rtl)
+		out << line
 	}
 	return out
+}
+
+// shape_line shapes the atoms of one line, and returns the line together with the y the
+// next line starts at -- which is what the break loop needs to know before it can ask
+// which floats the next line has to avoid.
+//
+// `gap` is the interval of the line no float covers. The pen starts at its left edge in
+// both directions, and a right-to-left line is anchored at its right edge, which is what
+// makes the shortening mirror: a Persian line beside a left float starts at that float's
+// left edge rather than at the block's.
+fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, line_atoms []Atom, gap LineGap,
+	y int, rtl bool) (LaidLine, int) {
+	// Half-leading, CSS 2.1 10.8.1: each item's leading is split half above and half below
+	// its own text, so a line box is as tall as the tallest item on it plus that item's
+	// half-leading.
+	// Iterating the atoms on this line directly, rather than every run in the box, is
+	// what keeps a 28px run on the second line from inflating the first.
+	mut above := 0.0
+	mut below := 0.0
+	for a in line_atoms {
+		if a.is_box {
+			// An atomic box sits on the baseline: its bottom margin edge is the line's
+			// baseline, which is `vertical-align: baseline` for inline-block. So its
+			// whole height is above the baseline and none of it below.
+			above = fmax(above, f64(a.box.rect.height))
+			continue
+		}
+		rs := font_style_of(b.runs[a.run].style, b.runs[a.run].font_size, ctx)
+		m := l.fonts.line_metrics(&rs)
+		half := (m.line_height - (m.ascent + m.descent)) / 2.0
+		above = fmax(above, m.ascent + half)
+		below = fmax(below, m.descent + half)
+	}
+	line_height := px(above + below)
+	baseline := f64(y) + above
+	// The line's segments, in source order. Consecutive atoms of one run are joined
+	// into a single segment, so a word spanning two atoms still joins and shapes as a
+	// word. They are collected before any of them is placed because a right-to-left
+	// line has to know the width of every segment before it can put the first one
+	// down: its pen starts at the right edge, not the left.
+	mut segs := []Segment{}
+	mut i := 0
+	for i < line_atoms.len {
+		if line_atoms[i].is_box {
+			segs << Segment{
+				is_box: true
+				width:  line_atoms[i].width
+				box:    line_atoms[i].box
+			}
+			i++
+			continue
+		}
+		mut j := i
+		mut sb := strings.new_builder(32)
+		for j < line_atoms.len && line_atoms[j].run == line_atoms[i].run {
+			sb.write_string(line_atoms[j].content)
+			j++
+		}
+		r := b.runs[line_atoms[i].run]
+		run_style := font_style_of(r.style, r.font_size, ctx)
+		// Read once: `Builder.str()` clears the builder, so a second call on the
+		// same one answers with the empty string and the segment would be shaped as
+		// nothing at all -- which is a line that silently loses its text.
+		seg_str := sb.str()
+		mut seg_w := 0.0
+		for k in i .. j {
+			seg_w += line_atoms[k].width
+		}
+		if rtl {
+			// The atoms' widths are each word measured on its own, and Arabic joining
+			// makes a word a different width when it is shaped with its neighbours than
+			// when it is shaped alone. Both directions are measured: on the default face
+			// the sentence these tests break into lines came to 150.09 by its atoms
+			// where it drew 125.89, and 145.60 where it drew 143.36; on the face these
+			// tests ask for, the two agree to the last decimal. Neither can be relied
+			// on, so the segment is measured the way the shaper will draw it and the
+			// line is anchored by that -- otherwise the ink ends short of the right edge
+			// by exactly the difference the font happens to introduce.
+			seg_w = l.fonts.advance(&run_style, seg_str)
+		}
+		segs << Segment{
+			text:  seg_str
+			style: run_style
+			width: seg_w
+		}
+		i = j
+	}
+	// The pen. Left to right it starts at the left edge of the gap and walks right,
+	// which is what it has always done. Right to left it starts one line width in from
+	// the gap's right edge and the same segments are then walked left to right from
+	// there, so the first thing written is the rightmost thing drawn, a line shorter
+	// than its gap sits flush against that edge, and an atomic box is placed by the
+	// same pen.
+	mut pen := f64(gap.left)
+	if rtl {
+		mut total := 0.0
+		for s in segs {
+			total += s.width
+		}
+		pen = f64(gap.right) - total
+	}
+	origin := pen
+	mut glyphs := []text.PositionedGlyph{}
+	for s in segs {
+		if s.is_box {
+			mut bx := s.box
+			bx.rect.x = int(pen)
+			bx.rect.y = int(baseline) - bx.rect.height
+			pen += s.width
+			continue
+		}
+		st := s.style
+		glyphs << l.fonts.shape(s.text, &st, pen, baseline)
+		pen += s.width
+	}
+	return LaidLine{
+		glyphs: glyphs
+		width:  pen - origin
+		height: line_height
+	}, y + line_height
 }
 
 // intrinsic_atom_width is the width an atom contributes to its box's intrinsic

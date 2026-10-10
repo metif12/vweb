@@ -354,6 +354,51 @@ fn test_display_is_not_inherited() {
 	assert s.display == .inline
 }
 
+// --- float and clear ---------------------------------------------------------
+
+fn test_float_and_clear_are_not_inherited() {
+	// Neither is inherited (CSS 2.1 9.5, 9.7): a floated element's children are laid
+	// out in the normal flow. A `float` that travelled down the tree would take every
+	// box below the floated one out of flow, and `clear` would clear for descendants
+	// that never asked.
+	mut parent := initial()
+	parent.float = .left
+	parent.clear = .both
+	s := style_of(author_engine(''), el('span', '', ''), parent, default_context())
+	assert s.float == .none
+	assert s.clear == .none
+}
+
+fn test_float_and_clear_parse() {
+	s := style_of(author_engine('div { float: left; clear: both }'), el('div', '', ''), initial(),
+		default_context())
+	assert s.float == .left
+	assert s.clear == .both
+	assert style_of(author_engine('div { float: right; clear: right }'), el('div', '', ''), initial(),
+		default_context()).float == .right
+	// An unknown keyword is dropped rather than read as `none`: `float: center` must
+	// not clear a previously set `float`, and the supply of nonsense values in
+	// stylesheets is endless.
+	u := style_of(author_engine('div { float: center; clear: sideways }'), el('div', '', ''),
+		initial(), default_context())
+	assert u.float == .none
+	assert u.clear == .none
+}
+
+fn test_a_floated_element_computes_display_block() {
+	// CSS 2.1 9.7. This is the rule the layout half of Phase 3 rests on: a float is not
+	// inline-level, so the text around it is not collected into one run with it.
+	s := style_of(author_engine('span { float: left }'), el('span', '', ''), initial(), default_context())
+	assert s.display == .block
+	assert style_of(author_engine('span { float: left; display: inline-block }'), el('span', '', ''),
+		initial(), default_context()).display == .block
+	// And `display: none` wins: generating no boxes at all beats being floated.
+	assert style_of(author_engine('span { display: none; float: left }'), el('span', '', ''),
+		initial(), default_context()).display == .none
+	// Without a float, nothing changes.
+	assert style_of(author_engine('span { clear: left }'), el('span', '', ''), initial(), default_context()).display == .inline
+}
+
 // --- shorthands -------------------------------------------------------------
 
 // assert_edges checks all four sides at once, because a shorthand that fills three
