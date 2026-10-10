@@ -1673,3 +1673,82 @@ assert قرمز شد (دو scaling و `test_blend_image_area_clips_a_cover_sized
 `[string, BackgroundRepeat]` به `[]string` نتیجه می‌شود؛ assertهای جدا
 جواب دادند.
 
+---
+
+## ۱۴۰۵/۰۷/۱۹ — `position` و `z-index`: جعبه بیرون از جریان، و جایی که قرار می‌گیرد
+
+**شکل کار.** `engine/style` سه فیلد تازه (`position`، `z_index`،
+`insets`)؛ `engine/display` یک پارامتر تازه روی `place` (`cb`، یعنی containing
+block) و یک پاس جدا برای جعبه‌های بیرون از جریان؛ `engine/paint` یک تقسیم دو
+گروهی در `box`. اول تست، بعد پیاده‌سازی، بعد کنترل.
+
+**تصمیم: containing block به‌شکل padding box، و در انتهای `place`.** یک جعبهٔ
+بیرون از جریان باید آن‌جا گذاشته شود که همهٔ ابعاد containing block نهایی شده
+است. اگر درون حلقهٔ فرزندان کشیده می‌شد، عرض و x و y موجود بودند ولی ارتفاع نه
+— و یک inset درصدی کسرِ ارتفاعی می‌شد که هنوز کسی عددش را نگذاشته. پس پاس در
+انتهای `place` است و cb از `b.rect` و `b.border_px` ساخته می‌شود:
+`rect.x + border_px[3]` و نه `content.x`. این یکی دو بار اشتباه شد و تنها وقتی
+درآمد که با `tools/boxes.v` دیده شد:
+
+1. cb اولین بار از **content box** ساخته شد. لبهٔ چپ محتوا ۱۰ پیکسل داخل
+   padding box است، پس هر overlay به اندازهٔ paddingِ والد جابه‌جا بود:
+   `left: 7px` روی x=17 نشست. تست `test_an_absolute_box_is_sized_by_
+   two_opposite_insets` با ۳۷۰ در برابر ۳۸۰ قرمز شد.
+2. cb برای نوادگانِ از راه یک فرزند `static` هم از content box گرفته شد. آن
+   مسیر با x درست و y صفر پیدا شد (`3` در انتظار `23`)، که اول شبیه یک باگ
+   جدا بود و نبود: در آن تست holder فرزند اول body بود، پس border boxش روی
+   y=0 است و پاسخ **درست** بود؛ اشتباه در عددی بود که خودم نوشته بودم.
+
+**کنترل، دو بار.** (۱) کل پیاده‌سازی برگردانده شد — پنج فایل `display.v`،
+`paint.v`، `style.v`، `compute.v`، `cascade.v` با `git checkout`، از روی
+پشتیبانِ SHA256-تطبیق‌داده‌شده — و تست‌ها سرجایشان ماندند: ۱۲ تست از ۱۳ تست
+چیدمان قرمز شدند و چهار تست ترتیب نقاشی هم قرمز شدند (پنجمین تست paint
+`test_equal_z_index_keeps_document_order` بود که **باید** سبز بماند، مثل
+`test_no_float_leaves_every_line_unshortened`: ترتیب سند تساویِ z-index است).
+سیزدهم تست چیدمان `test_a_static_box_is_exactly_where_it_was` است که هم باید
+سبز بماند، چون صفحهٔ بی‌`position` نباید تغییر کند.
+`test_position_and_the_insets_are_not_inherited` و دو تست دیگرِ سبک در آن
+اجرا کامپایل نشدند (`type style.Style has no field named position`)، پس
+«قبل»‌شان شکستِ کامپایل است نه assert.
+(۲) تست `test_a_percentage_inside_a_shrink_to_fit_absolute_box_is_not_
+measured_against_the_probe` بعد از آن کنترل نوشته شد؛ وقتی حلقهٔ
+relayout در `place_absolute` را با `pass < 1` کندم تست سبز ماند — یعنی
+**حلقه برای این کیس بار نیست**، همان اندازه‌گیری که برای `place_atomic` بالاتر
+در همین فایل ثبت شده: با عرض‌های ذاتی امروز `atomic_fit` یک تابع
+یک‌مرحله‌ای از محتواست. آن تست ترکیب (absolute + shrink-to-fit + درصدِ
+درونش) را ثبت می‌کند، نه بارِ حلقه را.
+
+**دو چیز که فقط با رندر پیدا شد، نه با تست.**
+
+1. **`side_index` برای insetها -1 برمی‌گرداند.** تابع فقط دو شکلِ
+   `margin-top` و `border-top-width` را می‌شناخت و `top` را در هیچ‌کدام نیست.
+   `set_edge` با side=-1 `none` می‌داد و اعلام بی‌صدا دور ریخته می‌شد: جعبه
+   دقیقاً مثلِ بدونِ inset چیده می‌شد. تست‌ها هم قرمز شدند ولی با عددهای
+   محلِ استاتیک (۱۰ و ۴۰ در برابر ۲۰ و ۳۰)، که ریشهٔ دیگری می‌گویند. این
+   دقیقاً همان «پاسخ -1 یک نوشتن از مرز است، نه خطا» است که در بالای همان
+   تابع نوشته شده بود — برای border.
+2. **سبک کردنِ استایل روی جعبهٔ ناشناس.** `text_style_of` حالا `position`،
+   `z_index` و `insets` را هم پاک می‌کند. قبلش یک بلوکِ `position: relative`
+   استایلش را روی جعبهٔ ناشناسِ متنش کپی می‌کرد و متن دو بار جابه‌جا می‌شد.
+
+**یک انحراف آگاهانه از صورت‌مسئله.** صورت‌مسئله گفت insetها ارث می‌رسند.
+CSS 2.1 9.3.2 برای `top`/`right`/`bottom`/`left` صریحاً «Inherited: no» است و
+پیامدش واقعی است: هر نوادهٔ absolute یک جعبهٔ `top: 0` که هیچ استایلی برای خودش
+ندارد، offset ارثی می‌گرفت. پیاده‌شده و با
+`test_position_and_the_insets_are_not_inherited` قفل شده.
+
+**عددها.** ۱۲۶ تست در `engine/display`، ۴۶ در `engine/paint`، ۷۹ در
+`engine/style`، به‌علاوهٔ `engine/css` — همه سبز. `cmd/vweb/render_test.v`
+(۲۱ تست) هم سبز. `cmd/vweb`، `tools/boxes.v` و `examples/persian` هر سه با
+`-cc tcc -Wimpure-v` کامپایل شدند و exe نوشتند.
+
+**رندر.** یک صفحهٔ ۵۶۰×۴۸۰ با سه چیز: overlay قرمز که padding box کادرش قرار
+است، استکی از سه جعبهٔ position‌شده، و یک نوار absolute با `left` و `right`.
+`badge` در (۴۲۸,۷۰) نشست — یعنی ۸ پیکسل از لبهٔ **padding** boxِ کارت که
+۲ پیکسل border و ۱۶ پیکسل padding دارد. لیست دستورها ترتیب را ثابت کرد:
+`under` (z-index ۵۰ ولی position ندارد) اول، بعد `second` (z=1)، بعد `first`
+(z=2) — و رنگی که بالاتر می‌آید سبز است، یعنی z-index بر ترتیب سند غالب شد.
+
+**محدودیت باقی‌ماندهٔ خودم:** `position: sticky` پذیرفته نمی‌شود (در CSS 2.1
+نیست) و کانتکست استکینگ وجود ندارد، پس z-index فقط بین خواهرهای یک والد معنا
+دارد.

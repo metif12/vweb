@@ -230,6 +230,34 @@ fn parse_float(text string) ?Float {
 	}
 }
 
+// parse_position reads CSS 2.1 9.3.2. `sticky` is refused rather than approximated:
+// it is not in CSS 2.1, and treating it as `relative` would apply its offset
+// permanently instead of only while the box is stuck.
+fn parse_position(text string) ?Position {
+	return match text.trim_space().to_lower() {
+		'static' { Position.static }
+		'relative' { Position.relative }
+		'absolute' { Position.absolute }
+		'fixed' { Position.fixed }
+		else { return none }
+	}
+}
+
+// parse_z_index reads `z-index: auto | <integer>`.
+//
+// A negative value is valid and is what puts a box behind its parent's background, so
+// the integer is taken as-is rather than clamped at zero. A non-integer is refused:
+// CSS 2.1 says the property takes an integer, and `2.5` is a typo rather than a
+// request for 2.
+fn parse_z_index(text string) ?ZIndex {
+	t := text.trim_space().to_lower()
+	if t == 'auto' {
+		return ZIndex{ auto: true }
+	}
+	n := strconv.atoi(t) or { return none }
+	return ZIndex{ value: n }
+}
+
 fn parse_clear(text string) ?Clear {
 	return match text.trim_space().to_lower() {
 		'left' { Clear.left }

@@ -614,6 +614,125 @@ fn test_a_child_is_drawn_after_its_parent() {
 	assert seen_blue
 }
 
+// --- z-index and painting order (CSS 2.1 Appendix E.2) ------------------------
+//
+// A positioned box with a z-index paints above the in-flow content of its parent,
+// and among its positioned siblings the order is the z-index. The tiebreak is tree
+// order, and it is not a convenience: ARCHITECTURE.md 4 makes determinism a design
+// requirement, and the only ordering a golden image can rely on between two boxes
+// that asked for the same z-index is the one the document wrote.
+//
+// What is asserted is the position of a colour in the command list, because that is
+// what compositing order *is* here: the list is drawn in order, so "blue after red"
+// and "blue on top of red" are the same statement.
+
+// z_page builds body > first, second -- two blocks whose backgrounds are the two
+// colours, in that document order. Every test in this section is the same tree with
+// a different sheet, so what is being compared is always the order the sheet asked
+// for against the order the document was written in.
+fn z_page(src string) &DisplayList {
+	mut root := el('html', '')
+	mut body := el('body', 'body')
+	mut first := el('div', 'first')
+	mut second := el('div', 'second')
+	attach(mut body, first, second)
+	attach(mut root, body)
+	return list_of(root, src, 800)
+}
+
+// first_at returns the index of the first command painted in `color`, or -1.
+fn first_at(l &DisplayList, color raster.Color) int {
+	mut i := 0
+	for cmd in l.commands {
+		if cmd.kind == .fill_rect && cmd.color == color {
+			return i
+		}
+		i++
+	}
+	return -1
+}
+
+fn test_a_higher_z_index_paints_above_whatever_the_document_order_was() {
+	// The rule, and the direction that matters: the blue box is written *first* and
+	// asked for the higher z-index, so the red box has to be painted before it even
+	// though it comes later in the document.
+	l := z_page('#first { background-color: blue; position: relative; z-index: 2 } #second { background-color: red; position: relative; z-index: 1 }')
+	red := first_at(l, raster.red)
+	blue := first_at(l, raster.blue)
+	assert red >= 0
+	assert blue >= 0
+	assert red < blue
+}
+
+fn test_equal_z_index_keeps_document_order() {
+	// The tiebreak. Two boxes with the same z-index paint in the order the document
+	// wrote them, so this is the control that says the ordering came from the sheet
+	// above and not from an unstable sort of the same tree.
+	l := z_page('#first { background-color: blue; position: relative; z-index: 2 } #second { background-color: red; position: relative; z-index: 2 }')
+	assert first_at(l, raster.blue) < first_at(l, raster.red)
+	// And the reverse document order gives the reverse paint order, which is what
+	// "document order" has to mean.
+	r := z_page('#second { background-color: blue; position: relative; z-index: 2 } #first { background-color: red; position: relative; z-index: 2 }')
+	assert first_at(r, raster.red) < first_at(r, raster.blue)
+}
+
+fn test_a_z_index_on_a_box_that_is_not_positioned_is_ignored() {
+	// CSS 2.1 9.3.2: z-index applies to positioned boxes only. A red box with
+	// `z-index: 5` and no `position` stays in the flow and paints where the flow puts
+	// it, which is *before* the later positioned box no matter what it asked for.
+	l := z_page('#first { background-color: red; z-index: 5 } #second { background-color: blue; position: relative; z-index: 1 }')
+	assert first_at(l, raster.red) < first_at(l, raster.blue)
+	// And the mirror, so the assertion above is not just document order: a positioned
+	// first box with a lower z-index than a *positioned* second one reverses it.
+	r := z_page('#first { background-color: blue; position: relative; z-index: 1 } #second { background-color: red; z-index: 9 }')
+	assert first_at(r, raster.red) < first_at(r, raster.blue)
+}
+
+fn test_a_relative_box_with_a_z_index_paints_above_the_block_after_it() {
+	// `relative` keeps its place in the flow, so its position in the box tree is not
+	// where it paints: it is a positioned box and joins the stacking order above the
+	// in-flow content of its parent.
+	l := z_page('#first { background-color: blue; position: relative; z-index: 3 } #second { background-color: red }')
+	assert first_at(l, raster.red) < first_at(l, raster.blue)
+}
+
+fn test_an_absolute_box_paints_above_the_in_flow_content_around_it() {
+	// The overlay case: an out-of-flow box is drawn on top of the content it was
+	// placed over, whatever the document order said. Its parent here is positioned,
+	// which is what makes the overlay's own containing block the parent at all.
+	mut root := el('html', '')
+	mut body := el('body', 'body')
+	mut holder := el('div', 'holder')
+	mut overlay := el('div', 'overlay')
+	mut under := el('div', 'under')
+	attach(mut overlay, text_el('over'))
+	// The overlay is written *first*, so the document order says the opposite of the
+	// painting order this test asserts.
+	attach(mut holder, overlay, under)
+	attach(mut body, holder)
+	attach(mut root, body)
+	l := list_of(root, '#holder { position: relative; background-color: green } #under { background-color: red } #overlay { position: absolute; top: 0; left: 0; width: 20px; height: 20px; background-color: blue }',
+		800)
+	assert first_at(l, raster.green) < first_at(l, raster.red)
+	assert first_at(l, raster.red) < first_at(l, raster.blue)
+}
+
+fn test_a_stacked_page_paints_deterministically() {
+	// ARCHITECTURE.md 4 on the new ordering: two independent layouts of the same
+	// stacked page must give the same command sequence, or a golden image of a
+	// positioned page is testing the sort rather than the page.
+	src := '#first { background-color: blue; position: relative; z-index: 2 } #second { background-color: red; position: absolute; top: 0; left: 0; z-index: 1 }'
+	a := z_page(src)
+	b := z_page(src)
+	mut i := 0
+	for i < a.commands.len {
+		assert a.commands[i].kind == b.commands[i].kind
+		assert a.commands[i].rect == b.commands[i].rect
+		assert a.commands[i].color == b.commands[i].color
+		i++
+	}
+}
+
 // --- determinism ------------------------------------------------------------
 
 fn test_painting_the_same_tree_twice_gives_the_same_list() {

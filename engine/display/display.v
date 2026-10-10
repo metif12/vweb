@@ -126,12 +126,32 @@ pub mut:
 	// children, because their position comes from the line layout rather than from block
 	// layout: they sit *inside* a line, at the point the line breaker put them.
 	atomics []&Box
+	// absolutes are the out-of-flow boxes of this block, in document order, filled in by
+	// `place` while it walks the flow. They are the same boxes that are in `children` --
+	// an absolutely positioned box has to stay there, because `place` records the
+	// position it *would* have had from the order it appears in -- and the extra list is
+	// what the placement pass at the end of `place` iterates.
+	//
+	// They are not laid out by the flow itself. CSS 2.1 9.6 takes them out of it: they do
+	// not advance the cursor, their margins do not collapse with a sibling's, and they
+	// contribute nothing to the intrinsic width of the box that holds them. Each of
+	// those is a rule elsewhere in this file, and each of them is a place where an
+	// out-of-flow box has to be recognised -- which is why the position, not the list
+	// membership, is what the check is on.
+	absolutes []&Box
 	// inline_items is the inline content in source order, text and atomics interleaved.
 	// 
 	// 
 	// `runs` and `atomics` are the same content split by type -- which is what shaping and
 	inline_items []InlineItem
 	element      &html.Tag = unsafe { nil }
+	// static_x and static_y are where this box would have been in the normal flow,
+	// which is what an inset of `auto` resolves to (CSS 2.1 10.3.7 rule 3: `left` is
+	// the static position). It is recorded while the flow is walked rather than
+	// recomputed, because the cursor that would produce it has moved on by the time
+	// the out-of-flow box is placed.
+	static_x int
+	static_y int
 	// is_anonymous marks a box with no element of its own -- the block an inline
 	// element's text was collected into. Paint needs to know, because an anonymous box
 	// has no background of its own to draw.
@@ -172,7 +192,15 @@ pub fn (mut l Layouter) layout(root &html.Tag) &Box {
 	// Layouter because Layouter is reused: a field holding floats from a previous
 	// viewport would shorten lines on the next one by boxes that are no longer there.
 	mut floats := []&Box{}
-	l.place(mut b, l.viewport_width, 0, 0, false, mut floats)
+	// The initial containing block: a `position: absolute` box with no positioned
+	// ancestor is placed against the viewport (CSS 2.1 10.1), which is also the
+	// containing block every `top`/`left` percentage starts from resolving against.
+	l.place(mut b, l.viewport_width, 0, 0, false, ContBlock{
+		x:      0
+		y:      0
+		width:  l.viewport_width
+		height: l.viewport_height
+	}, mut floats)
 	return b
 }
 
@@ -480,6 +508,14 @@ fn text_style_of(parent style.Style) style.Style {
 	// anonymous box a float inside its own parent's float, which recursed.
 	s.float = .none
 	s.clear = .none
+	// And `position`, `z-index` and the insets, for the same reason a third time. A
+	// `position: relative` block's inline content is one anonymous box, and that box is
+	// laid out from the origin its parent was laid out at -- which is already the
+	// shifted one. Carrying the parent's `position` onto it would shift the text a
+	// second time, by the parent's own insets.
+	s.position = .static
+	s.z_index = style.ZIndex{ auto: true }
+	s.insets = style.auto_edges()
 	// `display` too, because the style is copied from whatever block the text sits in and
 	// that is not what the anonymous box is: a flow root's own inline content is part of
 	// the flow root's flow, so an anonymous box inside it that carried `flow-root` would
@@ -487,6 +523,183 @@ fn text_style_of(parent style.Style) style.Style {
 	// shorten. The box holds inline content and lays it out, which is what `block` says.
 	s.display = .block
 	return s
+}
+
+// ContBlock is the containing block an out-of-flow box is placed against: the
+// padding box of the nearest ancestor that is not `static` (CSS 2.1 10.1), or the
+// initial containing block when there is no such ancestor.
+//
+// `height` is -1 when it is not definite, and that is a real answer rather than a
+// missing one. A percentage against a containing block whose height comes from its
+// content is `auto`, and this engine cannot tell the two apart with a number: the
+// containing block is a box that is still being laid out. A box's *own* out-of-flow
+// children are the exception -- they are placed against a containing block whose
+// height does exist, because by then this box has been laid out -- see `place`.
+struct ContBlock {
+pub mut:
+	x      int
+	y      int
+	width  int
+	height int
+}
+
+// out_of_flow reports whether this position takes a box out of the normal flow
+// (CSS 2.1 9.6). `sticky` is not accepted by the cascade, so a page using it keeps
+// the `static` initial value and its box stays in the flow.
+fn out_of_flow(p style.Position) bool {
+	return p == .absolute || p == .fixed
+}
+
+// inset_px resolves one inset to pixels, or -1 when the side names no position.
+//
+// A percentage is the second way to say `auto`: CSS 2.1 10.3.7 resolves a
+// percentage against a dimension of the containing block, and when that dimension
+// is not definite the percentage computes to `auto`. So `basis < 0` returns -1 for
+// a percentage and leaves a real length alone -- a `top: 10px` under a containing
+// block of unknown height is still 10.
+fn inset_px(l style.Length, ctx &style.Context, basis int) int {
+	if l.unit == .auto || l.unit == .none {
+		return -1
+	}
+	if l.unit == .percent {
+		if basis < 0 {
+			return -1
+		}
+		return px(l.value * f64(basis) / 100.0)
+	}
+	return px(resolve(l, ctx, 0.0))
+}
+
+// relative_offset is how far a relatively positioned box moves (CSS 2.1 9.4.3).
+//
+// It is resolved at the *top* of a box's own layout rather than applied to a finished
+// subtree, and that is not an optimisation: the shift then moves the box and everything
+// it lays out, in one arithmetic step, and a second layout of the same box -- which the
+// relayout protocol does -- starts from the unshifted origin again instead of shifting
+// a box that was already shifted.
+//
+// LTR resolves an over-constrained pair by ignoring `right`, and only the sides that
+// were written move the box: a box with `top` alone does not shift sideways because
+// `left` was not given.
+fn (mut l Layouter) relative_offset(b &Box, cb ContBlock) (int, int) {
+	s := b.style
+	ctx := l.context(b.font_size)
+	left := inset_px(s.insets.left, &ctx, cb.width)
+	right := inset_px(s.insets.right, &ctx, cb.width)
+	top := inset_px(s.insets.top, &ctx, cb.height)
+	bottom := inset_px(s.insets.bottom, &ctx, cb.height)
+	mut dx := 0
+	mut dy := 0
+	if left >= 0 {
+		dx = left
+	} else if right >= 0 {
+		dx = -right
+	}
+	if top >= 0 {
+		dy = top
+	} else if bottom >= 0 {
+		dy = -bottom
+	}
+	return dx, dy
+}
+
+// place_absolute places one out-of-flow box against its containing block.
+//
+// The rules of CSS 2.1 10.3.7 in the order they resolve, because the order is what the
+// answers depend on: the width first -- from the two opposite insets, or
+// shrink-to-fit, or the specified one -- then the horizontal edge (from `left`, or
+// from `right` measured against the width, or from the static position), then the
+// vertical one.
+//
+// The width when there is none is the same clamp and the same protocol
+// `place_atomic` implements for an atomic inline-level box (CSS 2.1 10.3.9), which is
+// why the two share it rather than each inventing one. ARCHITECTURE.md section 5 is
+// the reason there is a protocol at all: a box whose width is measured, holding a
+// percentage, is a fraction of the very width being measured.
+fn (mut l Layouter) place_absolute(mut ab &Box, cb ContBlock) {
+	s := ab.style
+	ctx := l.context(ab.font_size)
+	mut block := cb
+	if s.position == .fixed {
+		// `fixed` is `absolute` with one rule replaced (CSS 2.1 10.1): the containing
+		// block is the viewport, so a positioned ancestor above it does not apply.
+		block = ContBlock{ x: 0, y: 0, width: l.viewport_width, height: l.viewport_height }
+	}
+	m := edges_of(s.margin, &ctx, f64(block.width))
+	pad := edges_of(s.padding, &ctx, f64(block.width))
+	edge := zero_width_sides(mut edges_of(s.border_width, &ctx, f64(block.width)), s.border_style)
+	frame := edge.left + edge.right + pad.left + pad.right
+	top := inset_px(s.insets.top, &ctx, block.height)
+	right := inset_px(s.insets.right, &ctx, block.width)
+	bottom := inset_px(s.insets.bottom, &ctx, block.height)
+	left := inset_px(s.insets.left, &ctx, block.width)
+	// The space the border box may occupy, before the box's own margins take their
+	// share.
+	space := block.width - m.left - m.right
+	definite_width := s.width.unit != .auto && s.width.unit != .none
+	mut used := block.width
+	if !definite_width && left >= 0 && right >= 0 {
+		// The two opposite insets size the box. The result is floored at zero rather
+		// than allowed to go negative, which is what an over-constrained box would
+		// otherwise produce.
+		mut w := space - left - right
+		if w < 0 {
+			w = 0
+		}
+		used = w + m.left + m.right
+	} else if !definite_width {
+		// Neither inset and no width: shrink-to-fit, the clamp CSS 2.1 10.3.7 takes from
+		// 10.3.9 and the protocol ARCHITECTURE.md section 5 says a measured width
+		// needs. The probe is laid out at its static position; only the width it turns
+		// out to need is kept, because the position is decided below.
+		l.place_root(mut ab, unbreakable_width, ab.static_x, ab.static_y, block)
+		mut assumed := atomic_fit(ab, space) + m.left + m.right
+		for pass := 1; pass < max_relayout_passes; pass++ {
+			l.place_root(mut ab, assumed, ab.static_x, ab.static_y, block)
+			next := atomic_fit(ab, space) + m.left + m.right
+			if next == assumed {
+				break
+			}
+			assumed = next
+		}
+		used = assumed
+	}
+	// A pass at the provisional position, so that the box has a size before it is used:
+	// `right` and `bottom` are distances from the far edge of the containing block to
+	// this box's own far *margin* edge, and neither can be measured until the box has
+	// been laid out at the width decided above. It is laid out again below, at the
+	// position the insets actually ask for, because a first pass at the wrong place is
+	// still what makes the second one right.
+	l.place_root(mut ab, used, ab.static_x, ab.static_y, block)
+	// Then the place. `left` and `top` are simple offsets from the near edges of the
+	// containing block; `right` and `bottom` are measured from the far edges and so need
+	// the size the pass above produced. An inset that is `auto` -- including one that was
+	// a percentage of a base nobody knows -- leaves the box at its static position.
+	mut bx := ab.static_x
+	mut by := ab.static_y
+	if left >= 0 {
+		bx = block.x + left
+	} else if right >= 0 {
+		bx = block.x + block.width - right - ab.rect.width - m.left - m.right
+	}
+	if top >= 0 {
+		by = block.y + top
+	} else if bottom >= 0 {
+		by = block.y + block.height - bottom - ab.rect.height - m.top - m.bottom
+	}
+	l.place_root(mut ab, used, bx, by, block)
+	// CSS 2.1 10.6.5: with `top` and `bottom` both given and `height: auto`, the height
+	// is what is left between them. This is the `top: 0; bottom: 0` overlay, which is
+	// the commonest way a stylesheet asks for a full-height box, and without it the
+	// box takes its content height and stops short of the bottom.
+	if (s.height.unit == .auto || s.height.unit == .none) && top >= 0 && bottom >= 0 {
+		mut h := block.height - top - bottom - m.top - m.bottom - frame
+		if h < 0 {
+			h = 0
+		}
+		ab.rect.height = h
+		ab.content.height = max_of(h - edge.top - edge.bottom - pad.top - pad.bottom, 0)
+	}
 }
 
 // place lays a box out at a position, in place, and returns its border-box height.
@@ -497,10 +710,29 @@ fn text_style_of(parent style.Style) style.Style {
 // box's bottom margin may collapse with the one below it, which decides whether the
 // caller subtracts it from the height it gets back. `floats` are the floats generated
 // so far in this flow, and `place` appends the ones it generates to it.
+//
+// `cb` is the containing block this box's own descendants are positioned against --
+// the padding box of the nearest ancestor that is not `static`, or the viewport. It
+// changes only when a positioned box is entered, which is why it is a parameter rather
+// than a field: two boxes in the same flow can be in different containing blocks.
 fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom_escapes bool,
-	mut floats []&Box) int {
+	cb ContBlock, mut floats []&Box) int {
 	s := b.style
 	ctx := l.context(b.font_size)
+	// CSS 2.1 9.4.3: a relatively positioned box is offset from its normal position,
+	// and the offset is applied to the origin it is laid out at rather than to a
+	// finished subtree. Everything this box lays out -- its border box, its content
+	// box, its children, its glyphs -- then moves together, which is what the rule
+	// says, and the height this function returns is the unshifted one, so the
+	// following siblings are laid out exactly as if the box had not moved. That second
+	// half is the whole difference between `relative` and a margin.
+	mut ox := x
+	mut oy := y
+	if s.position == .relative {
+		dx, dy := l.relative_offset(b, cb)
+		ox += dx
+		oy += dy
+	}
 	mut margin := edges_of(s.margin, &ctx, f64(containing_width))
 	border := zero_width_sides(mut edges_of(s.border_width, &ctx, f64(containing_width)),
 		s.border_style)
@@ -531,7 +763,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	// Horizontally this is the opposite: margins do not collapse, the caller passes the
 	// same x to every child, and each box offsets itself by its own left margin. So
 	// `margin.left` is applied here and not there.
-	mut border_x := x + margin.left
+	mut border_x := ox + margin.left
 	// Horizontal auto margins, CSS 2.1 10.3.2. With both sides `auto` and a width that is
 	// not itself `auto`, the space left over is split between them, which is what centres
 	// `<div style="width:200px; margin:0 auto">`. With only one side `auto`, that side
@@ -540,21 +772,47 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	// The width has to be *definite*: a `width: auto` block has already taken all the space
 	// there is, so the leftover is zero. And only a positive leftover is split -- a negative
 	// one would push the box off the left edge.
-	if s.width.unit != .auto && s.width.unit != .none {
+	//
+	// An out-of-flow box is excluded, because CSS 2.1 10.3.7 makes every `auto` margin of
+	// an absolutely positioned box zero: it has already been given its place by an inset
+	// or by its static position, and splitting what is left over between its margins
+	// would move a box that was told exactly where to go.
+	if s.width.unit != .auto && s.width.unit != .none && !out_of_flow(s.position) {
 		leftover := containing_width - content_width - frame - margin.left - margin.right
 		if leftover > 0 {
 			if s.margin.left.unit == .auto && s.margin.right.unit == .auto {
-				border_x = x + leftover / 2
+				border_x = ox + leftover / 2
 			} else if s.margin.left.unit == .auto {
-				border_x = x + leftover
+				border_x = ox + leftover
 			} else if s.margin.right.unit == .auto {
-				border_x = x
+				border_x = ox
 			}
 		}
 	}
 	content_x := border_x + border.left + padding.left
-	mut cursor := y + border.top + padding.top
+	mut cursor := oy + border.top + padding.top
 	content_y := cursor
+
+	// The containing block this box's descendants are positioned against (CSS 2.1
+	// 10.1). A box that is not `static` becomes one, and the containing block is its own
+	// *padding box*: the border box less the borders, padding included. The content box
+	// would put every overlay one padding inside where it belongs.
+	//
+	// The height is -1: it is the one dimension that does not exist yet, because the
+	// children are what decide it. That is not a compromise but the rule CSS gives --
+	// a percentage against a containing block whose height is not definite computes to
+	// `auto` -- and it applies to every descendant reached through a *static* box. This
+	// box's own out-of-flow children are placed at the end of this function, where the
+	// height does exist.
+	mut child_cb := cb
+	if b.style.position != .static {
+		child_cb = ContBlock{
+			x:      border_x + border.left
+			y:      oy + border.top
+			width:  content_width + padding.left + padding.right
+			height: -1
+		}
+	}
 
 	mut previous_bottom := 0
 	mut first := true
@@ -573,6 +831,28 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		if !first {
 			top = max_of(previous_bottom, cm.top)
 		}
+		if out_of_flow(cs.position) {
+			// CSS 2.1 9.6, and both halves of it are rules rather than consequences of
+			// where the box is stored. It does not advance the cursor, and it does not
+			// collapse its margins with a sibling's, so the in-flow box after it keeps
+			// the place it had. That is the same pair of rules a float follows, for the
+			// same reason.
+			//
+			// What is recorded here is the place the box *would* have taken. `left:
+			// auto` resolves to exactly that (CSS 2.1 10.3.7 rule 3), and it is the
+			// static-position fallback that a box positioned by `top` alone still needs
+			// for its horizontal coordinate. It has to be captured while the cursor is
+			// here: by the time the box is placed, the cursor has moved past it.
+			child.static_x = content_x
+			child.static_y = cursor + top
+			b.absolutes << child
+			// The next sibling is no longer the first, but an out-of-flow box leaves no
+			// bottom margin behind it either, so `previous_bottom` keeps whatever the
+			// last in-flow box left.
+			first = false
+			i++
+			continue
+		}
 		if cs.float != .none {
 			// A floated box is out of the flow, and both halves of that are rules rather
 			// than a consequence of the data structure. It does not collapse its margins
@@ -583,7 +863,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 			// below it.
 			at := cursor + cm.top
 			l.place_float(mut child, content_width, content_x, at + clear_push(floats, cs.clear,
-				at), mut floats)
+				at), child_cb, mut floats)
 			// The next sibling is no longer the first, but a float leaves no bottom
 			// margin behind it: it does not participate in collapsing, so `previous_bottom`
 			// must keep whatever the last in-flow box left.
@@ -605,9 +885,11 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 			// it. That is the whole of what `display: flow-root` is for, and it is the
 			// one difference between it and a plain block.
 			mut inner := []&Box{}
-			cursor += l.place(mut child, content_width, content_x, cursor, is_last, mut inner)
+			cursor += l.place(mut child, content_width, content_x, cursor, is_last, child_cb,
+				mut inner)
 		} else {
-			cursor += l.place(mut child, content_width, content_x, cursor, is_last, mut floats)
+			cursor += l.place(mut child, content_width, content_x, cursor, is_last, child_cb,
+				mut floats)
 		}
 		previous_bottom = cm.bottom
 		first = false
@@ -622,7 +904,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 			continue
 		}
 		mut bx := b.atomics[ai]
-		l.place_atomic(mut bx, content_width, content_x, content_y)
+		l.place_atomic(mut bx, content_width, content_x, content_y, child_cb)
 	}
 
 	if b.text != '' {
@@ -641,9 +923,14 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		b.content = Rect{ x: content_x, y: content_y, width: content_width, height: height }
 		cursor += height
 		previous_bottom = 0
-	} else if b.children.len == 0 {
+	} else if flow_empty(b) {
 		// An empty block is still one line tall. A page of them collapsing to nothing
 		// makes `height: 100%` on a parent a percentage of zero.
+		//
+		// `flow_empty` rather than `children.len == 0`, because a box whose only child is
+		// absolutely positioned is empty: it has no flow content to give it a line, and
+		// giving it one would make every `position: relative` div holding a single
+		// overlay a phantom 20px taller than its content.
 		fs := font_style_of(s, b.font_size, &ctx)
 		line_height := px(l.fonts.line_metrics(&fs).line_height)
 		b.content = Rect{ x: content_x, y: content_y, width: content_width, height: line_height }
@@ -665,6 +952,13 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	mut child_max := 0
 	mut child_min := 0
 	for c in b.children {
+		// An out-of-flow box is not part of the flow, so it is not part of the intrinsic
+		// width either: CSS Sizing 3 says an absolutely positioned box does not
+		// contribute to its parent's intrinsic size, and a page whose only child is an
+		// overlay would otherwise measure itself against it.
+		if out_of_flow(c.style.position) {
+			continue
+		}
 		cctx := l.context(c.font_size)
 		ce := edges_of(c.style.margin, &cctx, f64(content_width))
 		w := c.max_content_width + ce.left + ce.right
@@ -684,7 +978,12 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	mut content_height := max_of(cursor - content_y, 0)
 	// A box with no content at all -- `display: block` on an empty div with a set
 	// height aside -- would otherwise be zero tall.
-	if b.children.len == 0 && b.text == '' && content_height == 0 {
+	//
+	// An out-of-flow child is not content. A box whose only child is absolutely
+	// positioned is empty, and a stylesheet that puts one overlay inside a
+	// `position: relative` div expects that div to be no taller than its other
+	// content -- which is the same rule that makes a float not heighten its parent.
+	if flow_empty(b) && content_height == 0 {
 		fs := font_style_of(s, b.font_size, &ctx)
 		content_height = px(l.fonts.line_metrics(&fs).line_height)
 	}
@@ -716,7 +1015,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		border_height -= previous_bottom
 	}
 
-	b.rect = Rect{ x: border_x, y: y, width: content_width + frame, height: border_height }
+	b.rect = Rect{ x: border_x, y: oy, width: content_width + frame, height: border_height }
 	// Assigned one side at a time because a braced array initializer with positional
 	// elements is a parse error in V 0.5.2 (see notes/V-GOTCHAS.md).
 	mut bw := [4]int{}
@@ -726,7 +1025,54 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	bw[3] = border.left
 	b.border_px = bw
 	b.content.height = max_of(content_height, 0)
+
+	// Every out-of-flow box this box is the containing block for, placed now that
+	// every dimension of it is final.
+	//
+	// This is the whole reason they are placed here rather than inside the child loop
+	// above: the loop runs before this box's height exists, and a percentage inset
+	// placed there would be a fraction of a height nobody has decided yet. The
+	// containing block handed down to the descendants reached through a *static* child
+	// still has `height: -1`, which is the answer CSS gives for that case.
+	if b.absolutes.len > 0 {
+		mut own := cb
+		if b.style.position != .static {
+			// The padding box, which CSS 2.1 10.1 names: the border box less the two
+			// borders on each axis. The padding itself is *inside* it, so an absolute child
+			// with no inset starts at the outer edge of the padding and not at the edge of
+			// the content -- reading the content box here would put every overlay one
+			// padding inside where it belongs.
+			own = ContBlock{
+				x:      b.rect.x + b.border_px[3]
+				y:      b.rect.y + b.border_px[0]
+				width:  b.rect.width - b.border_px[1] - b.border_px[3]
+				height: b.rect.height - b.border_px[0] - b.border_px[2]
+			}
+		}
+		for ai in 0 .. b.absolutes.len {
+			mut ab := b.absolutes[ai]
+			l.place_absolute(mut ab, own)
+		}
+	}
 	return border_height
+}
+
+// flow_empty reports that a box has nothing in the normal flow inside it. An
+// out-of-flow child is not flow content, so a box holding only one is empty -- which is
+// the rule that keeps a `position: relative` div with one absolute child from growing a
+// phantom line. It is a walk rather than a count because the out-of-flow boxes are kept
+// in `children` for the document order they carry, and a length there says nothing
+// about how many of them are in the flow.
+fn flow_empty(b &Box) bool {
+	if b.text != '' {
+		return false
+	}
+	for c in b.children {
+		if !out_of_flow(c.style.position) {
+			return false
+		}
+	}
+	return true
 }
 
 // unbreakable_width is a containing width wide enough that nothing laid out inside it
@@ -756,7 +1102,12 @@ const max_relayout_passes = 4
 // `line_width` is the width of the line's content box: what is available before the
 // box's own margins take their share. The position it is given here is temporary --
 // the line layout places the box where it actually landed when it shapes the line.
-fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
+//
+// `cb` is the containing block the box's own out-of-flow descendants resolve against.
+// It is threaded through rather than reset: an atomic is a formatting context of its
+// own but not a containing block, so a `position: absolute` inside an inline-block is
+// still placed against the positioned ancestor *outside* it.
+fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int, cb ContBlock) {
 	// CSS 2.1 10.3.9: `width: auto` on an inline-block is shrink-to-fit,
 	// min(max(preferred minimum, available), preferred) -- and not "fill the line",
 	// which is what the same `auto` means on a block. The two are one `display` value
@@ -767,7 +1118,7 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// An explicit width is left to `box_width`, where it was already right, and there is
 	// nothing to relayout: the width is the fact.
 	if bx.style.width.unit != .auto && bx.style.width.unit != .none {
-		l.place_root(mut bx, line_width, x, y)
+		l.place_root(mut bx, line_width, x, y, cb)
 		return
 	}
 	bx_ctx := l.context(bx.font_size)
@@ -784,7 +1135,7 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// really going to get, an atomic inside it would already have shrunk itself to that
 	// width, and this box's max-content would be measured as the space it was given
 	// rather than as the width of its content.
-	l.place_root(mut bx, unbreakable_width, x, y)
+	l.place_root(mut bx, unbreakable_width, x, y, cb)
 	// The margins are handed back as containing width so that `place`'s own `available`
 	// comes out as `fitted` less the frame, and its rect as `fitted`.
 	mut assumed := atomic_fit(bx, available) + bx_margin.left + bx_margin.right
@@ -794,7 +1145,7 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// the width the pass just used was an assumption, and this is the fact that replaces
 	// it. A pass whose own answer is the width it already used is the final layout.
 	for pass := 1; pass < max_relayout_passes; pass++ {
-		l.place_root(mut bx, assumed, x, y)
+		l.place_root(mut bx, assumed, x, y, cb)
 		next := atomic_fit(bx, available) + bx_margin.left + bx_margin.right
 		if next == assumed {
 			return
@@ -804,7 +1155,7 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// The ceiling. Every pass changed the answer, so stop with the width we settled on
 	// rather than moving again: a resolution that has not stabilised in `max_relayout_passes`
 	// passes is a cycle, and the last width is the deterministic one to keep.
-	l.place_root(mut bx, assumed, x, y)
+	l.place_root(mut bx, assumed, x, y, cb)
 }
 
 // place_root lays out a box that starts a block formatting context of its own, which
@@ -815,9 +1166,9 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 // Without it a float inside an inline-block would shorten the paragraph around it, and
 // a line inside an inline-block would wrap around a float in the paragraph that holds
 // it -- neither of which is true, and both of which look like a bug in the float.
-fn (mut l Layouter) place_root(mut b &Box, containing_width int, x int, y int) {
+fn (mut l Layouter) place_root(mut b &Box, containing_width int, x int, y int, cb ContBlock) {
 	mut inner := []&Box{}
-	l.place(mut b, containing_width, x, y, false, mut inner)
+	l.place(mut b, containing_width, x, y, false, cb, mut inner)
 }
 
 // place_float lays out one floated box and records it in `floats`.
@@ -833,7 +1184,7 @@ fn (mut l Layouter) place_root(mut b &Box, containing_width int, x int, y int) {
 // The height that is measured against at each attempt is one pixel -- see
 // `placement_gap` -- because the floats that can block the new one are exactly the ones
 // covering its top edge.
-fn (mut l Layouter) place_float(mut f &Box, containing_width int, x int, y int, mut floats []&Box) {
+fn (mut l Layouter) place_float(mut f &Box, containing_width int, x int, y int, cb ContBlock, mut floats []&Box) {
 	right_side := f.style.float == .right
 	ctx := l.context(f.font_size)
 	fm := edges_of(f.style.margin, &ctx, f64(containing_width))
@@ -857,7 +1208,7 @@ fn (mut l Layouter) place_float(mut f &Box, containing_width int, x int, y int, 
 		// its own edge -- the gap's right edge less the width it turned out to need -- with
 		// a second call, because its own content has to be laid out where it will be
 		// drawn and not where it was measured.
-		l.place_atomic(mut f, space, gap.left, top)
+		l.place_atomic(mut f, space, gap.left, top, cb)
 		mut fx := gap.left
 		if right_side {
 			// `place` offsets the border box by the box's own left margin, so the x it is
@@ -865,7 +1216,7 @@ fn (mut l Layouter) place_float(mut f &Box, containing_width int, x int, y int, 
 			fx = gap.right - f.rect.width - fm.left - fm.right
 		}
 		if fx != gap.left {
-			l.place_atomic(mut f, space, fx, top)
+			l.place_atomic(mut f, space, fx, top, cb)
 		}
 		// The two things that make a position wrong: not fitting in the gap, and
 		// overlapping an earlier float. Both are checked on the margin box against the
@@ -1286,6 +1637,9 @@ fn collect_text(el &html.Tag) string {
 
 // boxes returns every box in the tree, parents before children, which is the order
 // paint composites in for source-over.
+//
+// Out-of-flow boxes are in `children`, in document order, so this walk is unchanged and
+// a tool printing the tree reads an absolutely positioned box where the document put it.
 pub fn boxes(root &Box) []&Box {
 	mut out := []&Box{}
 	mut stack := []&Box{}

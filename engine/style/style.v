@@ -77,6 +77,42 @@ pub mut:
 	// below the one that was floated.
 	float Float
 	clear Clear
+	// `position` and `z_index` are the two halves of CSS 2.1 9.3, and like `float`
+	// they are initial values: an absolutely positioned child of a relative parent is
+	// positioned against *that* parent and not against the parent's own containing
+	// block, which is what inheritance of `position` would have made it.
+	position Position
+	z_index  ZIndex
+	// insets are `top`, `right`, `bottom` and `left`, in the same Edges shape as the
+	// margin and the padding because they share the shorthand-less four-longhand
+	// layout. Their initial value is `auto`, not zero, and that is the whole of the
+	// static-position fallback in 10.3.7: `auto` says "this side does not name a
+	// position", and zero says "this side names the edge of the containing block".
+	insets Edges
+}
+
+// Position is which scheme a box is laid out in.
+pub enum Position {
+	static
+	relative
+	absolute
+	fixed
+	// `sticky` is deliberately absent. It is not in CSS 2.1, and accepting it as an
+	// alias for `relative` would give a box a permanent offset that CSS says should
+	// only apply while it is stuck -- so a page using it keeps the `static` initial
+	// value and its content stays in the flow.
+}
+
+// ZIndex is `z-index: auto | <integer>`.
+//
+// `auto` is not zero and is kept apart from it. A positioned box with `z-index:
+// auto` paints as step 6 of CSS 2.1 Appendix E.2, in the same group as `0` and in
+// document order among it; folding it into 0 would make a box that was never given a
+// z-index compete with the ones that were.
+pub struct ZIndex {
+pub mut:
+	auto  bool
+	value int
 }
 
 pub enum Display {
@@ -256,6 +292,21 @@ pub fn initial() Style {
 		visibility:          .visible
 		float:               .none
 		clear:               .none
+		position:            .static
+		z_index:             ZIndex{ auto: true }
+		insets:              auto_edges()
+	}
+}
+
+// auto_edges is the four `auto` lengths the insets start from. It cannot be `Edges{}`:
+// the zero Length is `unit: .none`, which is "not a length", and an inset of `none`
+// would read as no inset at all rather than as the side that does not name a position.
+pub fn auto_edges() Edges {
+	return Edges{
+		top:    Length{ unit: .auto }
+		right:  Length{ unit: .auto }
+		bottom: Length{ unit: .auto }
+		left:   Length{ unit: .auto }
 	}
 }
 
