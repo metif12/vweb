@@ -197,6 +197,98 @@ fn test_the_loader_and_the_renderer_agree_on_a_path() {
 	assert count_inked(seam) > 0
 }
 
+// --- background images -------------------------------------------------------
+//
+// These are the tests of the I/O seam. `engine/style` records a URL and nothing
+// else; `engine/page` fetches it through the loader, decodes it with stb_image and
+// hands the painter a bitmap. Nothing inside engine/style or engine/paint opens a
+// file, which is the property ARCHITECTURE.md 1 asks for and the reason a cascade
+// test needs no image on disk.
+
+const tile_color = raster.Color{ r: 0xc0, g: 0x30, b: 0x20, a: 255 }
+
+fn write_solid_png(path string, w int, h int, col raster.Color) {
+	mut c := raster.new_canvas(w, h)
+	c.clear(col)
+	c.write_png(path) or { panic('cannot write test png: ' + err.msg()) }
+}
+
+fn test_a_background_image_is_fetched_decoded_and_composited() {
+	dir := os.vtmp_dir() + '/@vweb_render_test'
+	os.mkdir_all(dir) or { panic(err) }
+	write_solid_png(dir + '/tile.png', 4, 4, tile_color)
+	src := '<html><head><style>div.tile { width: 40px; height: 20px;' +
+		' background-image: url(tile.png); background-repeat: repeat }</style></head>' +
+		'<body><div class="tile"></div></body></html>'
+	page_path := dir + '/bg.html'
+	os.write_file(page_path, src) or { panic(err) }
+	mut ld := loader.Loader{ base: dir }
+	doc := page.load(page_path, mut ld) or { panic(err) }
+	assert doc.warnings.len == 0
+	canvas := page.render(doc, page.Options{ width: 60, height: 40 })
+	// The 4x4 tile repeats across the 40x20 box, so every pixel of it is the tile
+	// colour and nothing else on the canvas is.
+	assert count_coloured(canvas, tile_color) == 40 * 20
+}
+
+fn test_an_unreachable_image_is_a_warning_and_not_a_failure() {
+	// The engine degrades. A 404 background image leaves a warning naming the URL
+	// and the box keeps its background colour -- a page with one broken image is
+	// still a page, and a renderer that refused it would hide the rest.
+	src := '<html><head><style>div.tile { width: 40px; height: 20px;' +
+		' background-color: #123456; background-image: url(absent.png) }</style></head>' +
+		'<body><div class="tile"></div></body></html>'
+	mut ld := loader.Loader{ base: '.' }
+	doc := page.parse(src, mut ld)
+	assert doc.warnings.len == 1
+	assert doc.warnings[0].contains('absent.png')
+	canvas := page.render(doc, page.Options{ width: 60, height: 40 })
+	assert count_coloured(canvas, raster.Color{ r: 0x12, g: 0x34, b: 0x56, a: 255 }) == 40 * 20
+}
+
+fn test_an_image_that_is_not_an_image_is_a_warning() {
+	// The loader reached it and stb_image refused it. Same outcome as a 404: a
+	// warning and no image, rather than a panic in the middle of a composite.
+	dir := os.vtmp_dir() + '/@vweb_render_test'
+	os.mkdir_all(dir) or { panic(err) }
+	os.write_file(dir + '/not-an-image.png', '<html>this is a page, not a picture</html>') or {
+		panic(err)
+	}
+	src := '<html><head><style>div.tile { height: 20px; background-image: url(not-an-image.png) }</style></head>' +
+		'<body><div class="tile"></div></body></html>'
+	page_path := dir + '/bad-image.html'
+	os.write_file(page_path, src) or { panic(err) }
+	mut ld := loader.Loader{ base: dir }
+	doc := page.load(page_path, mut ld) or { panic(err) }
+	assert doc.warnings.len == 1
+	assert doc.warnings[0].contains('not-an-image.png')
+	canvas := page.render(doc, page.Options{ width: 60, height: 40 })
+	assert canvas.width == 60
+}
+
+fn test_an_image_in_the_background_shorthand_is_fetched() {
+	// The shorthand holds the url() among other components, so the collector has
+	// to look at one component at a time. Reading the whole value -- `url(t) repeat`
+	// -- matches neither the start nor the end and finds nothing, which is what
+	// this test caught the first time the page above was rendered by hand.
+	dir := os.vtmp_dir() + '/@vweb_render_test'
+	os.mkdir_all(dir) or { panic(err) }
+	write_solid_png(dir + '/shorthand.png', 4, 4, tile_color)
+	src := '<html><head><style>div.tile { width: 40px; height: 20px;' +
+		' background: #123456 url(shorthand.png) repeat }</style></head>' +
+		'<body><div class="tile"></div></body></html>'
+	page_path := dir + '/shorthand.html'
+	os.write_file(page_path, src) or { panic(err) }
+	mut ld := loader.Loader{ base: dir }
+	doc := page.load(page_path, mut ld) or { panic(err) }
+	assert doc.warnings.len == 0
+	canvas := page.render(doc, page.Options{ width: 60, height: 40 })
+	// The shorthand also resets background-color to transparent, so the only colour
+	// on the canvas is the tile's own -- which is what says the image was fetched
+	// and not the flat colour that was written before it.
+	assert count_coloured(canvas, tile_color) == 40 * 20
+}
+
 // --- warnings, determinism, introspection ------------------------------------
 
 fn test_an_unreachable_stylesheet_is_a_warning_and_not_a_failure() {

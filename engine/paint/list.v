@@ -2,6 +2,7 @@ module paint
 
 import engine.display
 import engine.raster
+import engine.style
 import text
 
 // A display list: the drawing operations a box tree turned into, in the order they
@@ -21,6 +22,21 @@ import text
 pub enum Kind {
 	fill_rect
 	glyph_run
+	image
+}
+
+// ImagePainting is what an image command carries beyond the bitmap itself.
+//
+// `draw` is where one tile of the image lands, already resolved from
+// background-position and background-size; `repeat` says whether that tile repeats.
+// The list never holds the tiles -- a repeated background is one command whose
+// repetition the compositor decides -- because the number of tiles is a question
+// about the target, not about the page.
+pub struct ImagePainting {
+pub mut:
+	bitmap &raster.Bitmap = unsafe { nil }
+	draw   display.Rect
+	repeat style.BackgroundRepeat
 }
 
 // Command is one drawing operation.
@@ -28,13 +44,15 @@ pub enum Kind {
 // `kind` is a tag rather than a sum type because V has no sum types in this version,
 // and a struct with three fields where one is meaningful per kind is the honest shape
 // of that limitation: `rect` and `color` belong to a fill, `glyphs` and `color` to a
-// run, and the unused field of each is zero rather than unset.
+// run, `image` to a background image, and the unused field of each is zero rather
+// than unset.
 pub struct Command {
 pub mut:
 	kind   Kind
 	rect   display.Rect
 	color  raster.Color
 	glyphs []text.PositionedGlyph
+	image  ImagePainting
 }
 
 @[heap]
@@ -64,6 +82,21 @@ pub fn (mut l DisplayList) glyph_run(glyphs []text.PositionedGlyph, color raster
 	}
 	mut cmd := Command{ kind: .glyph_run, color: color }
 	cmd.glyphs = glyphs
+	l.commands << cmd
+}
+
+// image records one background image. `area` is the box's background area and `x`,
+// `y`, `width`, `height` is the first tile inside it; the compositor does the tiling.
+pub fn (mut l DisplayList) image(area display.Rect, x int, y int, width int, height int, bitmap &raster.Bitmap, repeat style.BackgroundRepeat) {
+	if area.width <= 0 || area.height <= 0 || width <= 0 || height <= 0 {
+		return
+	}
+	mut cmd := Command{ kind: .image, rect: area }
+	cmd.image = ImagePainting{
+		bitmap: bitmap
+		draw:   display.Rect{ x: x, y: y, width: width, height: height }
+		repeat: repeat
+	}
 	l.commands << cmd
 }
 
@@ -101,6 +134,29 @@ pub fn composite(mut c raster.Canvas, l &DisplayList) {
 			}
 			.glyph_run {
 				text.draw_run(mut c, cmd.glyphs, cmd.color)
+			}
+			.image {
+				// Repeat flags rather than the enum, because the tiling loop asks the
+				// two axes separately and a `match` here would only serve to spell out
+				// which of the four combinations sets which.
+				mut rx := false
+				mut ry := false
+				match cmd.image.repeat {
+					.repeat {
+						rx = true
+						ry = true
+					}
+					.repeat_x {
+						rx = true
+					}
+					.repeat_y {
+						ry = true
+					}
+					.no_repeat {}
+				}
+				c.blend_image_area(cmd.rect.x, cmd.rect.y, cmd.rect.width, cmd.rect.height,
+					cmd.image.draw.x, cmd.image.draw.y, cmd.image.draw.width, cmd.image.draw.height,
+					cmd.image.bitmap, rx, ry)
 			}
 		}
 	}

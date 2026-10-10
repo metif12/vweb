@@ -1,5 +1,6 @@
 module style
 
+import engine.raster
 import strconv
 import strings
 
@@ -323,16 +324,73 @@ fn parse_line_height(text string) ?Length {
 	return Length{ value: n, unit: .none }
 }
 
-// apply_background handles the `background` shorthand, of which Phase 1 acts on the
-// colour alone. The rest -- image, position, repeat, attachment -- is parsed far
-// enough to know it was there and then ignored, so that
-// `background: #fff url(x.png) no-repeat` sets the colour instead of being dropped
-// whole.
+// apply_background handles the `background` shorthand, of which the colour, the
+// image, the repeat, the position and the size all reach the computed style.
+//
+// CSS says a shorthand resets every longhand it stands for, so all five are set
+// whether or not the value mentions them: `background: red` clears an image, a
+// position and a size that a lower-specificity rule had put there, which is what
+// the author meant by writing the shorthand instead of `background-color`.
+//
+// The components are told apart by what they parse as, in an order that cannot
+// confuse them: a repeat keyword first (nothing else spells `no-repeat`), then a
+// position component (a keyword, a length or a percentage), then a colour, then
+// an image. The size sits after a `/`, which is the only place a slash may appear
+// in the grammar.
 fn apply_background(mut s Style, text string) {
+	// The reset happens before the scan, not only when a component is found.
+	s.background_color = raster.transparent
+	s.background_image = ''
+	s.background_repeat = .repeat
+	s.background_position = initial_background_position()
+	s.background_size = initial_background_size()
+	mut pos_words := []string{}
+	mut size_words := []string{}
+	mut in_size := false
 	for part in split_top_level(text) {
-		if c := parse_color(part) {
-			s.background_color = c
+		// A repeat keyword is checked before the slash is looked at, because CSS's
+		// grammar lets it come after the size and no size component can ever be
+		// spelled `no-repeat`.
+		if r := parse_repeat(part) {
+			s.background_repeat = r
+			continue
 		}
+		if part == '/' {
+			in_size = true
+			continue
+		}
+		if in_size {
+			// The other components may follow the size -- CSS allows the attachment
+			// and the boxes in any order -- so a component that is not a size is
+			// dropped rather than read as one and made to reject the whole
+			// declaration.
+			if is_size_word(part) {
+				size_words << part
+			}
+			continue
+		}
+		if _ := position_component(part) {
+			pos_words << part
+			continue
+		}
+		if col := parse_color(part) {
+			s.background_color = col
+			continue
+		}
+		if url := parse_image_url(part) {
+			s.background_image = url
+			continue
+		}
+		// Anything else -- `fixed`, `scroll`, a typo -- is dropped. CSS drops it too:
+		// a component the shorthand does not understand invalidates the
+		// declaration, and dropping one component is the more useful half of that
+		// because the rest of the shorthand still applies.
+	}
+	if p := parse_background_position_words(pos_words) {
+		s.background_position = p
+	}
+	if z := parse_background_size_words(size_words) {
+		s.background_size = z
 	}
 }
 

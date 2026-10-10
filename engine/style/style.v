@@ -26,20 +26,29 @@ pub mut:
 	display          Display
 	color            raster.Color
 	background_color raster.Color
-	font_size        Length
-	font_family      string
-	font_weight      FontWeight
-	font_style       FontStyle
-	line_height      Length
-	text_align       TextAlign
-	text_decoration  TextDecoration
-	white_space      WhiteSpace
-	direction        Direction
-	margin           Edges
-	padding          Edges
-	border_width     Edges
-	border_color     [4]raster.Color
-	border_style     [4]BorderStyle
+	// background_image is a *reference* to an image, not the image. ARCHITECTURE.md 1
+	// keeps the engine free of I/O, so the cascade records the URL as the stylesheet
+	// wrote it and the caller that owns the loader fetches and decodes it; paint is
+	// handed a map of URL to bitmap and looks the reference up here. An empty
+	// string is `background-image: none`.
+	background_image    string
+	background_repeat   BackgroundRepeat
+	background_position BackgroundPosition
+	background_size     BackgroundSize
+	font_size           Length
+	font_family         string
+	font_weight         FontWeight
+	font_style          FontStyle
+	line_height         Length
+	text_align          TextAlign
+	text_decoration     TextDecoration
+	white_space         WhiteSpace
+	direction           Direction
+	margin              Edges
+	padding             Edges
+	border_width        Edges
+	border_color        [4]raster.Color
+	border_style        [4]BorderStyle
 	// width and height are `auto` unless the cascade says otherwise. The distinction
 	// is the whole of Phase 2: `auto` for a block means fill the containing block and
 	// `0` means nothing.
@@ -214,6 +223,10 @@ pub fn initial() Style {
 		display:             .inline
 		color:               raster.black
 		background_color:    raster.transparent
+		background_image:    ''
+		background_repeat:   .repeat
+		background_position: initial_background_position()
+		background_size:     initial_background_size()
 		font_size:           Length{ value: 16.0, unit: .px }
 		font_family:         'serif'
 		font_weight:         .normal

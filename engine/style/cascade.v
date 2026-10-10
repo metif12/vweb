@@ -312,17 +312,18 @@ fn supports_display(value string) bool {
 // supported_properties is every property name `apply` acts on, plus the shorthands it
 // expands. It is a list rather than a switch because it is data, and a test asserts it
 // against `apply` so the two cannot drift.
-const supported_properties = ['box-sizing', 'clear', 'color', 'background', 'background-color',
-	'border', 'border-color', 'border-style', 'border-width', 'border-top', 'border-right',
-	'border-bottom', 'border-left', 'border-top-color', 'border-right-color', 'border-bottom-color',
-	'border-left-color', 'border-top-style', 'border-right-style', 'border-bottom-style',
-	'border-left-style', 'border-top-width', 'border-right-width', 'border-bottom-width',
-	'border-left-width', 'display', 'direction', 'float', 'font-family', 'font-size', 'font-style',
-	'font-weight', 'height', 'line-height', 'list-style-position', 'list-style-type', 'margin',
-	'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'max-height', 'max-width',
-	'min-height', 'min-width', 'opacity', 'padding', 'padding-top', 'padding-right', 'padding-bottom',
-	'padding-left', 'text-align', 'text-decoration', 'text-transform', 'vertical-align', 'visibility',
-	'white-space', 'width']
+const supported_properties = ['background', 'background-color', 'background-image',
+	'background-position', 'background-repeat', 'background-size', 'border', 'border-color',
+	'border-style', 'border-width', 'border-top', 'border-right', 'border-bottom', 'border-left',
+	'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
+	'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
+	'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+	'box-sizing', 'clear', 'color', 'display', 'direction', 'float', 'font-family', 'font-size',
+	'font-style', 'font-weight', 'height', 'line-height', 'list-style-position', 'list-style-type',
+	'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'max-height',
+	'max-width', 'min-height', 'min-width', 'opacity', 'padding', 'padding-top', 'padding-right',
+	'padding-bottom', 'padding-left', 'text-align', 'text-decoration', 'text-transform',
+	'vertical-align', 'visibility', 'white-space', 'width']
 
 // supports_property reports whether the cascade can act on a property at all.
 pub fn supports_property(name string) bool {
@@ -631,6 +632,12 @@ pub fn (mut s Style) apply(decl Declaration, ctx &Context) {
 		'display' { s.display = parse_display(v) or { return } }
 		'color' { s.color = parse_color(v) or { return } }
 		'background-color' { s.background_color = parse_color(v) or { return } }
+		'background-image' { s.background_image = parse_image_url(v) or { return } }
+		'background-repeat' { s.background_repeat = parse_repeat(v) or { return } }
+		'background-position' {
+			s.background_position = parse_background_position(v) or { return }
+		}
+		'background-size' { s.background_size = parse_background_size(v) or { return } }
 		'background' { apply_background(mut s, v) }
 		'font-size' { s.font_size = parse_length(v) or { return } }
 		'font-family' { s.font_family = first_family(v) }

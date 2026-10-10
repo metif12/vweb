@@ -105,6 +105,14 @@ fn describe(cmd paint.Command) string {
 			b.write_string('  ' + cmd.color.str())
 			return b.str()
 		}
+		.image {
+			// The area the image fills, then the first tile inside it: one command
+			// per background however many tiles it becomes, so the list stays
+			// readable and the tiling is the compositor's business.
+			return 'image   ' + rect_str(cmd.image.draw) + ' in ' + rect_str(cmd.rect) + '  ' +
+				cmd.image.bitmap.width.str() + 'x' + cmd.image.bitmap.height.str() + ' ' +
+				cmd.image.repeat.str()
+		}
 	}
 }
 
