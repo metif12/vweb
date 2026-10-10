@@ -24,12 +24,12 @@
 // runs around it. There is also no `text-align`, so a short line can only be flush
 // right. Both are Phase 3's work.
 //
-// The Arabic fallback chain is still dead. `font_set_for` (text/fonts.v:227) adds the Arabic
-// faces to the set's flat chain, but vtext's `pick_in` answers from `general` -- which
-// `new_script_font_set(primary, primary)` sets to the primary itself -- and returns it
-// without ever walking that chain. So a Persian run whose primary face has no Arabic draws
-// `.notdef`. Which is why the source below asks for `sans-serif`: on Windows that resolves
-// to a face that covers Arabic, and `pick_in`'s primary branch then answers instead.
+// The Arabic fallback chain works. `font_set_for` (text/fonts.v:243) builds a flat chain with the
+// primary first and the Arabic faces behind it, so a Persian run whose primary face has no Arabic
+// reaches them. `sans-serif` below is a choice rather than a workaround: on Windows it resolves to a
+// face that covers Arabic, which answers Latin and Persian from one file and keeps the page to one
+// face. `serif` or `monospace` would draw the Latin in Georgia or Consolas and the Persian in
+// whatever the Arabic chain found.
 
 import engine.page
 import os

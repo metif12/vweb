@@ -1,5 +1,6 @@
 module text
 
+import os
 import vtext
 import engine.raster
 
@@ -265,16 +266,255 @@ fn test_ensure_arabic_chain_is_populated_once() {
 }
 
 fn test_font_set_falls_back_past_a_latin_face() {
-	// The point of new_script_font_set: a primary face with no Arabic coverage
+	// The point of the fallback chain: a primary face with no Arabic coverage
 	// must not stop the Persian text from finding one.
+	//
+	// This is asserted against a face that really has no Arabic. It used to be
+	// written with `sans-serif`, which is Segoe UI on a Windows host and covers
+	// Arabic itself -- so the test passed whether or not the fallback worked,
+	// which is how the dead chain stayed green. monospace is Consolas, which has
+	// none.
 	mut lib := new_font_library()
 	lib.ensure_arabic_chain(400)
-	fs := lib.font_set_for(lib.primary_id(&FontStyle{
-		family: 'sans-serif'
+	style := FontStyle{
+		family: 'monospace'
 		size:   32.0
-	}))
+	}
+	fid := lib.primary_id(&style)
+	primary := lib.font(fid) or { panic('no primary') }
+	assert !primary.has_glyph(`س`), 'monospace must stay Latin-only for this test to mean anything'
+	fs := lib.font_set_for(fid)
 	arabic_font := fs.pick_in(lib.ctx, `س`)
 	assert arabic_font != none
+	// none is not an answer here: it is the whole bug. A font that comes back
+	// but is the primary has no glyph for the letter either, and the glyph will
+	// be .notdef.
+	got := arabic_font or { panic('no font for a Persian letter') }
+	assert got.has_glyph(`س`)
+}
+
+// --- the Arabic fallback chain, end to end ------------------------------------
+//
+// A Persian letter shaped against a face that has no Arabic used to resolve to
+// that same face and draw .notdef. The reason is in vtext: `pick_in`'s general
+// branch returns the general font whether or not it covers the codepoint, and
+// never walks the flat chain, so a general that is the primary leaves every
+// other face in the set unreachable. These tests hold the chain open and pin
+// the two things that must not move while it is open.
+
+fn test_persian_falls_back_to_a_face_that_has_the_letters() {
+	// The content this browser is built for, against the two generic families
+	// that resolve to a Latin-only face on a Windows host. Seven of the eight
+	// glyphs in this string came back as .notdef before the chain was live.
+	//
+	// Both families are measured before either is asserted, so a failure names
+	// the state of every one of them rather than only the first.
+	mut report := []string{}
+	mut notdef := 0
+	for family in ['serif', 'monospace'] {
+		mut lib := new_font_library()
+		style := FontStyle{
+			family: family
+			size:   24.0
+		}
+		fid := lib.primary_id(&style)
+		primary := lib.font(fid) or { panic('no primary for ${family}') }
+		// The precondition. If a future Georgia gains Arabic this test says so
+		// rather than passing against a primary that no longer exercises the
+		// fallback, and the answer is to point it at another Latin-only family.
+		assert !primary.has_glyph(`س`), '${family} now covers Arabic, so this test no longer tests the fallback'
+		run := lib.shape('سلام دنیا', &style, 0.0, 30.0)
+		// Eight, not nine: the lam-alef ligature forms once something covers it.
+		mut family_notdef := 0
+		for g in run {
+			if g.gid == 0 {
+				family_notdef++
+			}
+		}
+		report << '${family}: ${run.len} glyphs, ${family_notdef} .notdef'
+		notdef += family_notdef
+	}
+	assert notdef == 0, report.join('; ')
+}
+
+fn test_a_primary_that_covers_arabic_answers_exactly_as_before() {
+	// A page that already rendered Persian correctly must not move. Segoe UI
+	// covers Arabic, so it is first in the chain and answers every glyph itself.
+	//
+	// The numbers are the measurement taken before the chain was made live, not
+	// a recomputation on the new path: eight glyphs, segoeui.ttf for every one
+	// of them, and glyph ids 2247 3812 2288 2325 3 3671 2299 2260. The 3 is the
+	// space, which is a real glyph and not .notdef.
+	mut lib := new_font_library()
+	style := FontStyle{
+		family: 'sans-serif'
+		size:   24.0
+	}
+	fid := lib.primary_id(&style)
+	primary := lib.font(fid) or { panic('no primary') }
+	assert primary.has_glyph(`س`), 'sans-serif must cover Arabic for this test to be the covering case'
+	run := lib.shape('سلام دنیا', &style, 0.0, 30.0)
+	assert run.len == 8
+	mut off_primary := 0
+	mut gids := []int{}
+	for g in run {
+		f := lib.font(g.font_id) or {
+			off_primary++
+			continue
+		}
+		if f.path() != primary.path() {
+			off_primary++
+		}
+		gids << g.gid
+	}
+	assert off_primary == 0, 'a covering primary must keep every glyph, Latin and Persian'
+	assert gids == [2247, 3812, 2288, 2325, 3, 3671, 2299, 2260]
+}
+
+fn test_latin_stays_on_the_face_the_page_asked_for() {
+	// The regression the obvious fix walks into. `pick_in`'s general answer
+	// covers every codepoint the primary branch does not take, and that branch
+	// only takes Arabic-script characters -- so a general that is an Arabic face
+	// takes the Latin text off the primary as well. Measured on this host with a
+	// serif page: `a` stopped resolving to georgia.ttf and started resolving to
+	// segoeui.ttf.
+	//
+	// Every family here resolves to a different file, so the assertion that each
+	// Latin glyph comes from the primary's own file is what pins it.
+	mut lib := new_font_library()
+	for family in ['sans-serif', 'serif', 'monospace'] {
+		style := FontStyle{
+			family: family
+			size:   16.0
+		}
+		fid := lib.primary_id(&style)
+		primary := lib.font(fid) or { panic('no primary for ${family}') }
+		run := lib.shape('Hello world', &style, 0.0, 20.0)
+		assert run.len == 11
+		mut off_primary := 0
+		for g in run {
+			f := lib.font(g.font_id) or {
+				off_primary++
+				continue
+			}
+			if f.path() != primary.path() {
+				off_primary++
+			}
+		}
+		assert off_primary == 0, '${family}: Latin moved off ${os.file_name(primary.path())}'
+	}
+}
+
+fn test_no_arabic_face_anywhere_keeps_the_answer_it_always_gave() {
+	// A host with no Arabic font at all. The chain cannot be built, and the
+	// answer must be the one the primary gives -- .notdef -- rather than a panic
+	// or an entry the library never opened.
+	dir := os.join_path(os.vtmp_dir(), 'vweb-fontchain-no-arabic')
+	os.rmdir_all(dir) or {}
+	os.mkdir_all(dir, os.MkdirParams{}) or {
+		assert false, 'cannot create ${dir}'
+		return
+	}
+	// Copied before the library is pointed at the directory, because
+	// use_only_from forgets what it had loaded.
+	os.cp(new_font_library().find_face('consola.ttf'), dir, os.CopyParams{}) or {
+		assert false, 'cannot vendor a Latin-only face into ${dir}'
+		return
+	}
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut lib := new_font_library()
+	lib.use_only_from(dir)
+	style := FontStyle{
+		family: 'monospace'
+		size:   24.0
+	}
+	fid := lib.primary_id(&style)
+	assert fid >= 0, 'the Latin primary must still resolve'
+	lib.ensure_arabic_chain(400)
+	assert lib.arabic_chain.len() == 0, 'this test needs a directory with no Arabic candidate in it'
+	run := lib.shape('سلام دنیا', &style, 0.0, 30.0)
+	// Nine, not eight: with nothing covering the letters the lam-alef pair
+	// never becomes a ligature, so every input character stays its own glyph.
+	assert run.len == 9
+	mut unregistered := 0
+	mut notdef := 0
+	for g in run {
+		if g.font_id < 0 {
+			unregistered++
+		}
+		if g.gid == 0 {
+			notdef++
+		}
+	}
+	assert unregistered == 0
+	assert notdef == 8, 'nothing covers these letters, so all eight are .notdef and the space is not'
+}
+
+fn test_the_first_weight_asked_for_fixes_the_arabic_chain() {
+	// The limitation `ensure_arabic_chain` records, which only became visible
+	// once the chain was live: it is built once, at the weight of the first
+	// style to reach it, and a later style of another weight gets that face.
+	// Measured on this host on a serif page, in both orders:
+	//
+	//	regular first:  segoeui.ttf  ->  bold then draws segoeui.ttf
+	//	bold first:      segoeuib.ttf ->  regular then draws segoeuib.ttf
+	//
+	// So a regular Persian paragraph after a bold Persian heading renders bold,
+	// and a bold heading after regular text renders regular. The assertion is
+	// the host-independent part: the weight does not follow the style. It is
+	// pinned rather than fixed because the fix is a chain per weight, which is a
+	// change to the library's shape and not to this file -- and when it lands,
+	// this test is the thing that must be deleted.
+	assert arabic_faces[0] != arabic_bold_faces[0], 'the two weight lists must name different faces for this test to mean anything'
+	for first_weight in [400, 700] {
+		mut lib := new_font_library()
+		regular := FontStyle{
+			family: 'serif'
+			size:   32.0
+			weight: 400
+		}
+		bold := FontStyle{
+			family: 'serif'
+			size:   32.0
+			weight: 700
+		}
+		first := if first_weight == 400 { regular } else { bold }
+		second := if first_weight == 400 { bold } else { regular }
+		first_face := face_of_a_persian_run(mut lib, first)
+		second_face := face_of_a_persian_run(mut lib, second)
+		assert first_face == second_face, 'weight ${first_weight} first: the chain stopped following the style (${first_face}, then ${second_face})'
+	}
+}
+
+fn face_of_a_persian_run(mut lib FontLibrary, style FontStyle) string {
+	for g in lib.shape('سلام دنیا', &style, 0.0, 40.0) {
+		f := lib.font(g.font_id) or { continue }
+		return os.file_name(f.path())
+	}
+	return 'none'
+}
+
+fn test_a_library_with_no_fonts_at_all_shapes_without_panicking() {
+	// The other fail-soft branch: no primary, no chain. font_set_for returns
+	// the empty chain and every glyph reports no font, which is what the
+	// measuring tests above count as unregistered.
+	mut lib := new_font_library()
+	lib.use_only_from('C:/definitely-not-a-font-directory')
+	style := FontStyle{
+		family: 'monospace'
+		size:   24.0
+	}
+	assert lib.primary_id(&style) == -1
+	run := lib.shape('سلام دنیا', &style, 0.0, 30.0)
+	mut unregistered := 0
+	for g in run {
+		if g.font_id < 0 {
+			unregistered++
+		}
+	}
+	assert unregistered == run.len
 }
 
 fn test_shape_produces_positioned_glyphs() {

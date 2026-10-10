@@ -1444,3 +1444,110 @@ fit می‌کرد و max-content این جعبه «فضایی که به او د�
 **کیس ۱ پذیرش** (کلمهٔ بلند در عرض کم) از قبل درست بود؛ با
 `test_a_long_word_is_not_broken_to_fit_a_narrow_box` قفل شد — هر گلیف روی یک
 baseline و در ۱۶px.
+
+---
+
+## زنجیرهٔ فالبک عربی زنده شد — و چرا نه با `general`
+
+**وضعیت:** کامل شد. `text/text_test.v`: ۶۱ تابع تست، همه سبز (`OK 3705.736
+ms`)، بدون warning و بدون notice. `engine/display/display_test.v` هم سبز
+(`OK 17034.800 ms`) — یعنی رندر قبلی عوض نشده.
+
+**ریشهٔ باگ، اندازه‌گیری‌شده.** `font_set_for` (text/fonts.v:243) با
+`new_script_font_set(primary, primary)` هر دو اسلات را به فونت اصلی می‌داد و
+بعد وجه‌های عربی را با `fs.add` به زنجیرهٔ **تخت** اضافه می‌کرد. ولی
+`pick_in` (vtext/glyph.v:180) وقتی `general` پر باشد زنجیرهٔ `fonts` را
+نمی‌بیند: اول شاخهٔ `primary` (فقط برای کاراکترهای عربی‌خط)، بعد شاخهٔ
+`general` — و آن شاخه `general` را **برمی‌گرداند چه گلیف داشته باشد چه نه**.
+پس `general` که همان `primary` بود، جای هیچ چیز دیگری نمی‌گذاشت.
+
+اندازه‌گیری روی host این ماشین:
+
+	serif:     primary=georgia.ttf  covers_arabic=false   persian=georgia.ttf
+	monospace: primary=consola.ttf  covers_arabic=false   persian=consola.ttf
+	sans-serif: primary=segoeui.ttf  covers_arabic=true    persian=segoeui.ttf
+
+و «سلام دنیا» برای serif و monospace: ۹ کاراکتر، ۸ گلیف، ۷ تا `gid=0`. یعنی
+۷ حرف از ۸ `.notdef` بود (gid سوم space است).
+
+**اصلاح: زنجیرهٔ تخت.** `new_font_set()` + `add(primary)` + همهٔ وجه‌های عربی.
+تنها ترتیبی است که هر سه شرط را با هم می‌دهد: لاتین روی primary، فارسی با
+primary اگر primary عربی دارد، فارسی روی وجه عربی اگر نداشته باشد.
+
+**چرا `general` نبود.** نسخهٔ obvious — `new_script_font_set(primary,
+arabic_face)` — را نوشتم و اندازه گرفتم؛ فارسی را درست می‌کند و **لاتین را
+می‌شکند**، چون شاخهٔ `primary` فقط برای کاراکترهای عربی‌خط شکار می‌کند و
+`general` جوابِ *بقیهٔ* کاراکترهاست. همان probe:
+
+	                        قبل              general=arabic_face
+	hello_advance serif    124.73           121.55   ← حالا Segoe UI
+	hello_advance mono     145.15           121.55
+	hello gids (mono)      11 135 142 ...   43 72 79 ...
+	persian gids (serif)   0 0 0 0 ...      2247 3812 ...
+
+و تست `test_latin_stays_on_the_face_the_page_asked_for` دقیقاً همین را می‌گوید:
+
+	serif: Latin moved off georgia.ttf    (11 of 11 glyphs)
+
+**اعداد قبل/بعد، صفحهٔ sans-serif (Segoe UI).** باید بیت‌به‌بیت یکسان باشد:
+
+	                 قبل                            بعد
+	glyph count       8                              8
+	first font        segoeui.ttf                    segoeui.ttf
+	gids              2247 3812 2288 2325 3 3671 …   2247 3812 2288 2325 3 3671 …
+	persian advance   88.734375                      88.734375
+	hello advance     121.546875                     121.546875
+
+و برای serif/monospace فقط عرض فارسی عوض شده (monospace ۱۰۵٫۵۶ → ۹۵٫۳۶ و
+serif ۱۷۳٫۷۹ → ۸۷٫۹۵) و عرض `Hello world` بیت‌به‌بیت همان مانده است — یعنی
+لاتین دست‌نخورده است.
+
+**کنترل.** تست‌ها را با اصلاح سبز کردم، بعد `text/fonts.v` را با `git checkout`
+به حالت اول برگرداندم و همان فایل تست را دوباره زدم (هیچ تغییر دیگری). خروجی
+اجرای نهایی، با سه تست:
+
+```
+C:\Users\MR\Projects\vweb-fontchain\text\text_test.v:293: fn test_font_set_falls_back_past_a_latin_face
+    assert got.has_glyph(`س`)
+C:\Users\MR\Projects\vweb-fontchain\text\text_test.v:337: fn test_persian_falls_back_to_a_face_that_has_the_letters
+   > assert notdef == 0, report.join('; ')
+     Left value (len: 2): `14`
+     Right value (len: 1): `0`
+        Message: serif: 8 glyphs, 7 .notdef; monospace: 8 glyphs, 7 .notdef
+C:\Users\MR\Projects\vweb-fontchain\text\text_test.v:487: fn test_the_first_weight_asked_for_fixes_the_arabic_chain
+   > assert first_face == second_face, 'weight ${first_weight} first: the chain stopped following the style
+(${first_face}, then ${second_face})'
+     Left value (len: 11): `georgia.ttf`
+     Right value (len: 12): `georgiab.ttf`
+        Message: weight 400 first: the chain stopped following the style (georgia.ttf, then georgiab.ttf)
+```
+
+سطر سوم خودش هم گواهِ مرده‌بودن زنجیره است: با زنجیرهٔ مرده، فارسی به primary
+می‌خورد و weight از استایل می‌آید (`georgia.ttf` برای regular و
+`georgiab.ttf` برای bold). با اصلاح، هر سه تست سبز.
+
+**دو تست موجود هم هدفشان درست شد:** `test_font_set_falls_back_past_a_latin_face`
+با `sans-serif` نوشته شده بود، که روی Windows خودش Segoe UI است و عربی دارد —
+پس چه زنجیره کار کند چه نکند سبز می‌ماند. حالا `monospace` (Consolas) است و یک
+`assert` پیش‌شرط هم دارد. و تست اصلی `.notdef` را می‌شمارد، نه فقط
+`font_id < 0` را: `test_every_glyph_of_a_persian_run_has_a_registered_font` قبلاً
+سبز بود، چون Consolas به‌عنوان «registered» جواب پیدا می‌کرد.
+
+**محدودیت باقی‌مانده: «یک‌بار ساخته می‌شود، اولین weight برنده است».** حالا که
+زنجیره زنده است این محدودیت **دیده می‌شود** (قبلاً نه، چون زنجیره مرده بود):
+صفحه‌ای که اول فارسی bold دارد، فارسی regular بعدی را با `segoeuib.ttf`
+می‌گیرد. برای صفحهٔ `sans-serif` بی‌اثر است (primary عربی دارد و جلوتر از
+زنجیره جواب می‌دهد) و برای serif/monospace اثر دارد. اصلاحش یک
+`map[int]&FontSet` به‌جای یک فیلد است. با
+`test_the_first_weight_asked_for_fixes_the_arabic_chain` قفل شد؛ وقتی آن محدودیت
+رفع شود باید همین تست را حذف کرد.
+
+**fail soft:** پوشه‌ای با فقط `consola.ttf` و هیچ وجه عربی (با `os.cp` داخل
+`os.vtmp_dir()` ساخته می‌شود): همان جواب قبلی — ۹ گلیف، ۸ تا `.notdef`،
+`font_id >= 0` — بدون panic. و کتابخانهٔ هیچ‌فونتی هم از همان مسیر
+`font_set_for` رد می‌شود و هر گلیف `font_id < 0` می‌گیرد.
+
+**چیز کوچکی که در مسیر نسخهٔ alternative یاد گرفته شد:** `mut general := primary`
+در V یک notice می‌دهد («`primary` is immutable, cannot have a mutable reference
+to an immutable object») و همان نسخه با آن notice کامپایل شد.
+
