@@ -11,15 +11,25 @@
 //
 //   - Persian shapes through the Arabic fallback chain, so the Latin body face does not
 //     have to cover it.
-//   - `direction: rtl` is inherited and reaches the computed style. In Phase 1 it does
-//     not move a box: the box tree is laid out left to right and paint is what aligns
-//     the run, so the *glyph order* is right while the *box* is not yet mirrored.
+//   - `direction: rtl` is inherited and reaches the computed style, and `layout_runs`
+//     lays the line out from the box's right edge: a line shorter than its box sits
+//     flush right, the first character of the string is the rightmost glyph, and an
+//     atomic inline-level box is placed by the same pen.
 //   - The line breaker treats a Persian word as one unbreakable unit, which is what
 //     makes a narrow column of Persian text come out ragged rather than hyphenated.
 //
-// What it does not yet demonstrate, stated here so a reader is not misled: the page is
-// laid out as if it were left-to-right, so the right margin will look like a left one.
-// Fixing that is paint's half of the work and it is not done.
+// What it does not yet demonstrate, stated here so a reader is not misled: there is no
+// bidi algorithm, so a line has one direction -- its box's -- and a Latin word inside a
+// Persian sentence is drawn in its own order but not reordered relative to the Persian
+// runs around it. There is also no `text-align`, so a short line can only be flush
+// right. Both are Phase 3's work.
+//
+// The Arabic fallback chain is still dead. `font_set_for` (text/fonts.v:227) adds the Arabic
+// faces to the set's flat chain, but vtext's `pick_in` answers from `general` -- which
+// `new_script_font_set(primary, primary)` sets to the primary itself -- and returns it
+// without ever walking that chain. So a Persian run whose primary face has no Arabic draws
+// `.notdef`. Which is why the source below asks for `sans-serif`: on Windows that resolves
+// to a face that covers Arabic, and `pick_in`'s primary branch then answers instead.
 
 import engine.page
 import os
