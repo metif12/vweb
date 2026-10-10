@@ -312,16 +312,17 @@ fn supports_display(value string) bool {
 // supported_properties is every property name `apply` acts on, plus the shorthands it
 // expands. It is a list rather than a switch because it is data, and a test asserts it
 // against `apply` so the two cannot drift.
-const supported_properties = ['box-sizing', 'color', 'background', 'background-color', 'border',
-	'border-color', 'border-style', 'border-width', 'border-top', 'border-right', 'border-bottom',
-	'border-left', 'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
-	'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
-	'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'display',
-	'direction', 'font-family', 'font-size', 'font-style', 'font-weight', 'height', 'line-height',
-	'list-style-position', 'list-style-type', 'margin', 'margin-top', 'margin-right', 'margin-bottom',
-	'margin-left', 'max-height', 'max-width', 'min-height', 'min-width', 'opacity', 'padding',
-	'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'text-align', 'text-decoration',
-	'text-transform', 'vertical-align', 'visibility', 'white-space', 'width']
+const supported_properties = ['box-sizing', 'clear', 'color', 'background', 'background-color',
+	'border', 'border-color', 'border-style', 'border-width', 'border-top', 'border-right',
+	'border-bottom', 'border-left', 'border-top-color', 'border-right-color', 'border-bottom-color',
+	'border-left-color', 'border-top-style', 'border-right-style', 'border-bottom-style',
+	'border-left-style', 'border-top-width', 'border-right-width', 'border-bottom-width',
+	'border-left-width', 'display', 'direction', 'float', 'font-family', 'font-size', 'font-style',
+	'font-weight', 'height', 'line-height', 'list-style-position', 'list-style-type', 'margin',
+	'margin-top', 'margin-right', 'margin-bottom', 'margin-left', 'max-height', 'max-width',
+	'min-height', 'min-width', 'opacity', 'padding', 'padding-top', 'padding-right', 'padding-bottom',
+	'padding-left', 'text-align', 'text-decoration', 'text-transform', 'vertical-align', 'visibility',
+	'white-space', 'width']
 
 // supports_property reports whether the cascade can act on a property at all.
 pub fn supports_property(name string) bool {
@@ -580,6 +581,17 @@ pub fn (e &Engine) compute(el &html.Tag, parent &Style, ctx &Context, state &sel
 	for decl in inline_declarations(el) {
 		s.apply(Declaration{ decl: decl, origin: .author }, ctx)
 	}
+	// CSS 2.1 9.7, the cheap half of it: the computed value of `display` is `block`
+	// for a floated element. This is not cosmetic, it is what makes the layout work:
+	// a float is not inline-level, so it does not sit inside a line and the text
+	// around it is not one run with it. `display: none` wins, because an element that
+	// generates no boxes at all is not made to generate them by being floated.
+	//
+	// The `position` half of 9.7 -- an absolutely positioned element also computes
+	// `display` to `block` -- is not here because there is no `position` yet.
+	if s.float != .none && s.display != .none {
+		s.display = .block
+	}
 	return s
 }
 
@@ -637,6 +649,8 @@ pub fn (mut s Style) apply(decl Declaration, ctx &Context) {
 		}
 		'opacity' { s.opacity = parse_number(v) or { return } }
 		'visibility' { s.visibility = parse_visibility(v) or { return } }
+		'float' { s.float = parse_float(v) or { return } }
+		'clear' { s.clear = parse_clear(v) or { return } }
 		'margin-top', 'margin-right', 'margin-bottom', 'margin-left' {
 			s.margin = set_edge(s.margin, v, side_index(decl.decl.name)) or { return }
 		}

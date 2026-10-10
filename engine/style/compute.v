@@ -220,6 +220,25 @@ fn parse_visibility(text string) ?Visibility {
 	}
 }
 
+fn parse_float(text string) ?Float {
+	return match text.trim_space().to_lower() {
+		'left' { Float.left }
+		'right' { Float.right }
+		'none' { Float.none }
+		else { return none }
+	}
+}
+
+fn parse_clear(text string) ?Clear {
+	return match text.trim_space().to_lower() {
+		'left' { Clear.left }
+		'right' { Clear.right }
+		'both' { Clear.both }
+		'none' { Clear.none }
+		else { return none }
+	}
+}
+
 fn parse_border_style(text string) ?BorderStyle {
 	return match text.trim_space().to_lower() {
 		'none' { BorderStyle.none }

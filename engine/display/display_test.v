@@ -1412,7 +1412,10 @@ fn furthest_x_of_cluster(glyphs []text.PositionedGlyph, cluster int) f64 {
 fn laid_lines(mut b &Box) []LaidLine {
 	mut l := layouter('', b.content.width)
 	ctx := l.context(b.font_size)
-	return l.layout_runs(mut b, &ctx, b.content.x, b.content.y, b.content.width)
+	// No floats: this re-lays the box's own runs out on their own, which is what the
+	// assertions about a line's width want, and none of them has a float in it.
+	mut empty := []&Box{}
+	return l.layout_runs(mut b, &ctx, b.content.x, b.content.y, b.content.width, empty)
 }
 
 fn test_rtl_text_in_an_rtl_box_is_flush_right() {
@@ -1664,4 +1667,305 @@ fn test_the_relayout_of_a_percentage_is_deterministic() {
 	assert first_p.rect.width == second_p.rect.width
 	assert first_q.rect.width == second_q.rect.width
 	assert first_p.max_content_width == second_p.max_content_width
+}
+
+// --- float and clear (CSS 2.1 section 9.5) -----------------------------------
+//
+// A floated box is taken out of the flow, positioned against the part of its line
+// that its own side has free at the current vertical position; every line box it
+// overlaps is shortened to avoid it; and `clear` is the one property that pushes a
+// box *below* a float. What is asserted here is where boxes and glyphs end up,
+// because a float is painted like any other box in tree order and geometry is the
+// part that can be wrong.
+//
+// Deliberately not tested, because it is not implemented: float shapes, the effect
+// of a float on the shrink-to-fit width of an atomic inline-level box, and negative
+// margins on a float. PHASES.md records each of them.
+
+// float_para is long enough to break into several lines at every width used below, so
+// that one paragraph holds a line beside a float and a line below it. Line boxes are
+// 20px under `layouter`, and the floats are 40 or 60 tall, so three lines of float is
+// three lines to look at -- the shortest viewport used below is 150, which is narrower
+// than most of the words put end to end.
+const float_para = 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twothree fourfive sixseven eightnine'
+
+// float_page builds a body of `width` from `which`, in the order given: `f` and `g`
+// are floated elements, `x` is an ordinary block, and `p` is the paragraph whose lines
+// have to shorten. The order is a parameter because which side of the text the float
+// appears on is part of what is being tested.
+fn float_page(sheet string, width int, which string) &Box {
+	mut body := el('body', '', '')
+	for c in which {
+		if c == `f` {
+			mut f := el('div', 'f', '')
+			attach(mut f, text_el('F'))
+			attach(mut body, f)
+		} else if c == `g` {
+			mut g := el('div', 'g', '')
+			attach(mut g, text_el('G'))
+			attach(mut body, g)
+		} else if c == `x` {
+			mut x := el('div', 'x', '')
+			attach(mut x, text_el('between'))
+			attach(mut body, x)
+		} else if c == `p` {
+			mut p := el('div', 'p', '')
+			attach(mut p, text_el(float_para))
+			attach(mut body, p)
+		}
+	}
+	return layouter(sheet, width).layout(body)
+}
+
+// glyph_lines splits a box's flat glyph list into its lines by the baseline they were
+// shaped at. `place` folds the lines into one list, and a test asking where the third
+// line starts has nothing else to ask.
+fn glyph_lines(b &Box) [][]text.PositionedGlyph {
+	mut out := [][]text.PositionedGlyph{}
+	mut cur := []text.PositionedGlyph{}
+	for g in b.glyphs {
+		if cur.len > 0 && g.y != cur[0].y {
+			out << cur
+			cur = []text.PositionedGlyph{}
+		}
+		cur << g
+	}
+	if cur.len > 0 {
+		out << cur
+	}
+	return out
+}
+
+fn rects_overlap(a Rect, b Rect) bool {
+	return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height
+		&& b.y < a.y + a.height
+}
+
+fn test_a_left_float_shortens_the_lines_it_overlaps() {
+	// The rule this section exists for, in the form that is easy to get wrong in the
+	// wrong direction: a float does not narrow the *block* after it -- that still
+	// fills its containing block -- it shortens the *line boxes* that overlap it.
+	root := float_page('#f { float: left; width: 100px; height: 60px }', 400, 'fp')
+	f := box_for(root, 'f')
+	p := box_for(root, 'p')
+	assert f.rect.x == 0
+	assert f.rect.y == 0
+	assert f.rect.width == 100
+	// The paragraph is beside the float, not under it: it starts at the same y and it
+	// is still as wide as its containing block.
+	assert p.rect.y == f.rect.y
+	assert p.rect.width == 400
+	lines := glyph_lines(p.children[0])
+	assert lines.len > 3
+	// 60px of float covers three 20px lines, and each of those starts exactly at the
+	// float's right edge: that is the pen's left limit, so this is an equality and not
+	// an inequality.
+	for i in 0 .. 3 {
+		assert min_x_of(lines[i]) == f64(f.rect.x + f.rect.width)
+	}
+	// And the line below the float is a full line again, starting at the block's own
+	// left edge. Without this the test would still pass if every line were shortened
+	// by every float, which is the other way to be wrong about the same rule.
+	assert min_x_of(lines[3]) == f64(p.content.x)
+}
+
+fn test_a_right_float_mirrors_the_left_one() {
+	// The mirror, asserted as a mirror: the float is against the right edge of the
+	// line, the lines it covers start at the block's left edge and end at its left
+	// edge, and the line below it is full again.
+	root := float_page('#f { float: right; width: 100px; height: 60px }', 400, 'fp')
+	f := box_for(root, 'f')
+	p := box_for(root, 'p')
+	assert f.rect.x == 400 - f.rect.width
+	assert p.rect.y == f.rect.y
+	assert p.rect.width == 400
+	lines := glyph_lines(p.children[0])
+	assert lines.len > 3
+	for i in 0 .. 3 {
+		// A line is ragged, so the gap is asserted on the right as an inequality: no
+		// line beside the float reaches past its left edge.
+		assert min_x_of(lines[i]) == f64(p.content.x)
+		assert max_x_of(lines[i]) <= f64(f.rect.x)
+	}
+	// Below the float the line has the whole block again, so it is wider than the
+	// shortened lines above it. Measured as an ink span rather than as a right edge,
+	// because a ragged line's right edge is not a fixed number.
+	assert max_x_of(lines[3]) - min_x_of(lines[3]) > max_x_of(lines[0]) - min_x_of(lines[0])
+}
+
+fn test_two_left_floats_fit_beside_each_other_while_the_line_has_room() {
+	// Which of the two CSS 2.1 9.5.1 rule 2 allows a renderer to choose, and where the
+	// browsers agree with each other and with the intent of the rule: either "to the
+	// right of the earlier float" or "lower than it", and a float takes the earliest y
+	// it can and is then as far to its own side as that allows -- so side by side is
+	// what it gets when the line is wide enough.
+	root := float_page('#f { float: left; width: 100px; height: 40px } #g { float: left; width: 100px; height: 40px }',
+		400, 'fgp')
+	f := box_for(root, 'f')
+	g := box_for(root, 'g')
+	assert g.rect.y == f.rect.y
+	assert g.rect.x == f.rect.x + f.rect.width
+	// The paragraph's first line starts past both of them.
+	p := box_for(root, 'p')
+	assert min_x_of(glyph_lines(p.children[0])[0]) == f64(g.rect.x + g.rect.width)
+}
+
+fn test_a_float_that_does_not_fit_drops_below_the_earlier_one() {
+	// The same two floats in a line only one of them fits: the second goes below the
+	// first rather than beside it, and neither overlaps the other.
+	root := float_page('#f { float: left; width: 100px; height: 40px } #g { float: left; width: 100px; height: 40px }',
+		150, 'fgp')
+	f := box_for(root, 'f')
+	g := box_for(root, 'g')
+	assert g.rect.x == f.rect.x
+	assert g.rect.y == f.rect.y + f.rect.height
+	assert !rects_overlap(f.rect, g.rect)
+	// And the paragraph is laid out against both: its first lines are beside the first
+	// float, the next ones are beside the second, and the ones below it are full.
+	p := box_for(root, 'p')
+	lines := glyph_lines(p.children[0])
+	assert lines.len > 4
+	assert min_x_of(lines[0]) == f64(f.rect.x + f.rect.width)
+	assert min_x_of(lines[4]) == f64(p.content.x)
+}
+
+fn test_a_float_does_not_push_the_block_that_follows_it_down() {
+	// The classic, and the control that says it is the float and not the height: with
+	// the float out of flow the paragraph starts where the float starts, and the same
+	// page with the float left in the normal flow starts it 40px lower.
+	root := float_page('#f { float: left; width: 100px; height: 40px }', 400, 'fp')
+	f := box_for(root, 'f')
+	p := box_for(root, 'p')
+	assert p.rect.y == f.rect.y
+	assert min_x_of(glyph_lines(p.children[0])[0]) == f64(f.rect.x + f.rect.width)
+	inflow := float_page('#f { width: 100px; height: 40px }', 400, 'fp')
+	assert box_for(inflow, 'f').style.float == .none
+	assert box_for(inflow, 'p').rect.y == 40
+	// Out of flow also means out of the parent's height: the body is as tall as the
+	// paragraph and the float is not counted in it. That is the clearfix case, and it
+	// is the behaviour CSS specifies.
+	assert root.rect.height == p.rect.height
+}
+
+fn test_clear_left_pushes_a_block_below_a_left_float() {
+	// `clear` is measured against a float that does not move the cursor, and the block
+	// doing the clearing is not the one that follows the float directly: an ordinary
+	// block sits between them, so a float that failed to be out of flow would put the
+	// cleared block 20px lower than it should be.
+	root := float_page('#f { float: left; width: 100px; height: 40px } #p { clear: left }',
+		400, 'fxp')
+	f := box_for(root, 'f')
+	p := box_for(root, 'p')
+	assert p.rect.y == f.rect.y + f.rect.height
+	// The cleared block starts below the float, so its first line is a full line again.
+	assert min_x_of(glyph_lines(p.children[0])[0]) == f64(p.content.x)
+}
+
+fn test_clear_on_one_side_ignores_a_float_on_the_other() {
+	// `clear: left` is named for the side the float is on, not for the side the box
+	// moves to: a right float does not push a box that clears only the left.
+	root := float_page('#f { float: right; width: 100px; height: 40px } #p { clear: left }',
+		400, 'fxp')
+	f := box_for(root, 'f')
+	p := box_for(root, 'p')
+	assert p.rect.y == box_for(root, 'x').rect.y + 20
+	assert p.rect.y < f.rect.y + f.rect.height
+}
+
+fn test_clear_both_pushes_below_a_float_on_either_side() {
+	root := float_page('#f { float: right; width: 100px; height: 40px } #p { clear: both }',
+		400, 'fxp')
+	f := box_for(root, 'f')
+	p := box_for(root, 'p')
+	assert p.rect.y == f.rect.y + f.rect.height
+	// And the twin on the left, so the value is not reading as `left`.
+	left := float_page('#f { float: left; width: 100px; height: 40px } #p { clear: both }',
+		400, 'fxp')
+	assert box_for(left, 'p').rect.y == box_for(left, 'f').rect.y + box_for(left, 'f').rect.height
+}
+
+fn test_a_float_keeps_its_margin_out_of_the_line_beside_it() {
+	// CSS 2.1 9.5 says a line avoids a float's *margin* box, and a margin on a floated
+	// image is the ordinary case -- not the exotic one. So a 100px float with
+	// `margin-right: 8px` shortens the line to 108 from the left edge, not to 100, and
+	// the ink starts one own margin further right than the border box ends.
+	root := float_page('#f { float: left; width: 100px; height: 40px; margin-right: 8px }',
+		400, 'fp')
+	f := box_for(root, 'f')
+	p := box_for(root, 'p')
+	assert min_x_of(glyph_lines(p.children[0])[0]) == f64(f.rect.x + f.rect.width + 8)
+	// And on the other side, mirror: a right float's left margin moves the line's right
+	// edge as well.
+	right := float_page('#f { float: right; width: 100px; height: 40px; margin-left: 6px }',
+		400, 'fp')
+	rf := box_for(right, 'f')
+	rp := box_for(right, 'p')
+	assert max_x_of(glyph_lines(rp.children[0])[0]) <= f64(rf.rect.x - 6)
+}
+
+fn test_a_float_with_an_auto_width_hugs_its_content() { // A float's `width: auto` is shrink-to-fit (CSS 2.1 10.3.8), not the fill the same
+	// `auto` gives a block: a pull-quote box 45px wide must not take the whole page
+	// and shorten every line in it. This is the same clamp `place_atomic` implements
+	// for an atomic inline-level box, and reading the block rule here is the mistake.
+	root := float_page('#f { float: left; height: 40px }', 400, 'fp')
+	f := box_for(root, 'f')
+	assert f.rect.width == f.max_content_width
+	assert f.rect.width < 400
+	assert min_x_of(glyph_lines(box_for(root, 'p').children[0])[0]) == f64(f.rect.x + f.rect.width)
+}
+
+fn test_a_float_inside_a_nested_block_shortens_the_lines_after_it() {
+	// CSS 2.1 9.5 shortens every line box a float overlaps, and a nested block is not
+	// a formatting context of its own -- so a float inside the nested div shortens the
+	// text after that div as well. This is the case whose list threading is easy to get
+	// wrong: a float kept in a per-box list would only shorten its own siblings.
+	mut body := el('body', '', '')
+	mut outer := el('div', 'o', '')
+	mut nested := el('div', 'n', '')
+	mut f := el('div', 'f', '')
+	attach(mut f, text_el('F'))
+	attach(mut nested, f, text_el('inner'))
+	attach(mut outer, nested, text_el('outer'))
+	attach(mut body, outer)
+	root := layouter('#f { float: left; width: 100px; height: 60px }', 400).layout(body)
+	fb := box_for(root, 'f')
+	assert fb.rect.x == 0
+	// Inside the nested block, and after it, both lines start past the float.
+	assert min_x_of(box_for(root, 'n').children[1].glyphs) == f64(fb.rect.x + fb.rect.width)
+	assert min_x_of(box_for(root, 'o').children[1].glyphs) == f64(fb.rect.x + fb.rect.width)
+}
+
+fn test_a_flow_root_does_not_let_its_floats_escape() {
+	// `display: flow-root` is a new block formatting context (CSS 2.1 9.4.1), which is
+	// the whole of what the keyword is for: the float shortens the lines inside it and
+	// nothing outside it. The same page without it is the test above.
+	mut body := el('body', '', '')
+	mut outer := el('div', 'o', '')
+	mut fr := el('div', 'r', '')
+	mut f := el('div', 'f', '')
+	attach(mut f, text_el('F'))
+	attach(mut fr, f, text_el('inside'))
+	attach(mut outer, fr, text_el('outside'))
+	attach(mut body, outer)
+	root := layouter('#r { display: flow-root } #f { float: left; width: 100px; height: 60px }',
+		400).layout(body)
+	fb := box_for(root, 'f')
+	inside := box_for(root, 'r').children[1]
+	outside := box_for(root, 'o').children[1]
+	assert min_x_of(inside.glyphs) == f64(fb.rect.x + fb.rect.width)
+	assert min_x_of(outside.glyphs) == f64(outside.content.x)
+}
+
+fn test_no_float_leaves_every_line_unshortened() {
+	// The control for the whole section, and the reason the shortening cannot be
+	// unconditional: the same page with `float: none` lays out exactly as it did
+	// before any of this existed.
+	root := float_page('#f { float: none; width: 100px; height: 40px }', 400, 'fp')
+	f := box_for(root, 'f')
+	p := box_for(root, 'p')
+	assert f.style.float == .none
+	assert p.rect.y == 40
+	assert min_x_of(glyph_lines(p.children[0])[0]) == f64(p.content.x)
+	// A block that asked for nothing still fills the space it has.
+	assert word_box('', 'aa bb cc', 800).rect.width == 800
 }
