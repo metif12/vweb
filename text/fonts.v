@@ -221,17 +221,36 @@ pub fn (mut lib FontLibrary) open_face(names []string) int {
 
 // font_set_for builds the fallback chain a style should shape against: the
 // chosen face first, then the Arabic chain behind it so a Latin-only primary
-// still renders Persian. `new_script_font_set` rather than `new_font_set` is
-// what makes this work: a flat chain would give the Latin face precedence for
-// the Persian word in a mixed line.
+// still renders Persian.
+//
+// The chain is flat, and that is a measurement rather than a preference.
+// vtext's FontSet has three slots -- primary, general and the flat list -- and
+// `pick_in` (vtext/glyph.v:180) answers primary for an Arabic-script codepoint,
+// then general, and only ever walks the flat list when general is unset. Its
+// general branch also returns general whether or not general has the glyph, so
+// with general set to the primary the Arabic faces were unreachable: a Persian
+// letter in a Latin-only primary was answered with that primary and drew
+// .notdef.
+//
+// Handing the Arabic faces to `new_script_font_set` as general instead fixes
+// that and breaks something else, because primary is consulted only for
+// Arabic-script codepoints and general answers every other one: on this host a
+// serif page's Latin stopped resolving to georgia.ttf and started resolving to
+// segoeui.ttf. A flat chain is first-that-covers, which is the only ordering
+// available here that keeps Latin on the face the page asked for and still
+// reaches the Arabic faces. It is also the only way to express a chain of
+// several Arabic faces: primary and general are one font each.
 pub fn (mut lib FontLibrary) font_set_for(primary_id int) &vtext.FontSet {
 	if primary_id < 0 || primary_id >= lib.entries.len {
 		return lib.arabic_chain
 	}
 	primary := lib.entries[primary_id].font
-	fs := vtext.new_script_font_set(primary, primary)
-	for i in lib.arabic_chain.fonts {
-		fs.add(i)
+	fs := vtext.new_font_set()
+	// The primary goes first, which is what keeps a face that covers Arabic
+	// winning for Arabic: it answers before the chain is ever consulted.
+	fs.add(primary)
+	for f in lib.arabic_chain.fonts {
+		fs.add(f)
 	}
 	return fs
 }
@@ -241,6 +260,11 @@ pub fn (mut lib FontLibrary) font_set_for(primary_id int) &vtext.FontSet {
 // grow without bound over a long session; a page that mixes bold and regular
 // Persian therefore gets the chain built for whichever it used first, which is a
 // real limitation and is recorded in PHASES.md rather than papered over.
+//
+// The weight now matters where it did not before. While the chain was dead the
+// choice was invisible; now a page whose first Persian run is bold renders its
+// later regular Persian in segoeuib.ttf. Keeping a chain per weight is the fix,
+// and it is a map rather than a field because a page can carry more than two.
 pub fn (mut lib FontLibrary) ensure_arabic_chain(weight int) {
 	if lib.arabic_chain.len() > 0 {
 		return
