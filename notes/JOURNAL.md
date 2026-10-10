@@ -1551,3 +1551,61 @@ C:\Users\MR\Projects\vweb-fontchain\text\text_test.v:487: fn test_the_first_weig
 در V یک notice می‌دهد («`primary` is immutable, cannot have a mutable reference
 to an immutable object») و همان نسخه با آن notice کامپایل شد.
 
+---
+
+## ۱۴۰۵/۰۷/۱۸ — `background-image`: سه باگ را رندرِ دستی پیدا کرد، نه تست
+
+**چرا تست‌ها کافی نبودند.** ۲۴ تست تازه در سه فایل نوشته شد و همه سبز شدند،
+و باز هم صفحه وقتی با `vweb.exe` رندر و پیکسل‌ها خوانده شدند سه چیز آشکار شد
+که هیچ تستی قفلشان نکرد. این دقیقاً همان درسی است که فاز ۱ یکی‌کرده بود:
+سبز بودن تست در این پروژه چیزی دربارهٔ درستی نمی‌گوید.
+
+**۱. `background: url(t) repeat` هیچ تصویری نگرفت.** `collect_images` مقدار
+*کل* اعلام را به `parse_image_url` می‌داد، و `url(t) repeat` نه با `url(`
+شروع می‌شود نه با `)` تمام می‌شود، پس به شاخهٔ «functional notation که
+کشیدنی نیست» می‌خورد و رشتهٔ خالی برمی‌گرداند. هیچ هشداری هم نبود، چون هیچ
+URL جمع‌آوری نشده بود. راه‌حل `background_image_urls` است که روی
+`split_top_level` می‌چرخد — همان کامپوننت‌هایی که `apply_background` می‌بیند.
+اندازه‌گیری: قبل از اصلاح ۱ دستور در لیست (فقط پس‌زمینهٔ body)، بعد ۴ دستور.
+
+**۲. `background-size` به پیکسل نمی‌رسید.** اندازهٔ کاشی در `ImagePainting.draw`
+حل می‌شد و بعد `blend_image` بیت‌مپ را با **اندازهٔ خودش** می‌کشید، پس
+`cover` روی `div.hero` فقط گوشهٔ بالا-چپ ۴×۴ را می‌گذاشت و بقیهٔ جعبه رنگ
+پس‌زمینه می‌ماند. `blend_image` حالا `dest_w, dest_h` می‌گیرد و
+nearest-neighbour با حساب صحیح نمونه‌برداری می‌کند؛ اندازهٔ برابر یعنی
+همان کپیِ قبلی. (فیلتر خطی که برای نسبت به ARCHITECTURE.md 3 «رأی دوم دربارهٔ
+اینکه پیکسل چیست» بود، نگرفتم.)
+
+**۳. کاشی از جعبه بیرون می‌زد.** `cover` تصویر را بزرگ‌تر از جعبه می‌کند و
+`blend_image` فقط به بوم کلیپ می‌کرد، پس `div.hero` ردیفی روی `div.one` هم
+رنگ می‌کرد. `clip_rect` هر کاشی را با ناحیهٔ پس‌زمینه (نه فقط بوم) می‌برد.
+قبل: `one(0,60)` سفید (رنگ کاشیِ سرریزشدهٔ hero)؛ بعد: `#222222` یعنی
+پس‌زمینهٔ body. هر دو با خواندن PNG خروجی `vweb.exe` اندازه گرفته شد.
+
+**کنترل، دو بار.** (۱) کل پیاده‌سازی (فایل‌های تازه را برداشتم و شش فایل
+تغییریافته را `git checkout` کردم): `bitmap_test.v`، `paint_test.v` و
+`style_test.v` هیچ‌کدام کامپایل نشدند (`unknown function: from_straight_rgba`،
+`unknown type raster.Bitmap`، `type Style has no field named background_image`)
+و `render_test.v` **کامپایل شد و سه assert قرمز شد** — `count_coloured == 800`
+در برابر ۰، و دو `doc.warnings.len == 1` در برابر ۰. (۲) بعداً، وقتی اصلاح‌های
+بعدی نوشته شدند، دو تغییر رفتاری را برگرداندم (`clip_rect` به `clip`ِ بوم، و
+`sx`/`sy` به `xx - x`/`yy - y` یعنی اندازهٔ طبیعی): `bitmap_test.v` با سه
+assert قرمز شد (دو scaling و `test_blend_image_area_clips_a_cover_sized_tile_to_the_area`)
+و `paint_test.v` با
+`test_rendering_a_resized_background_image_scales_the_pixels`. هر دو بار
+فایل تغییر‌یافته از نسخهٔ پشتیبان برگردانده و SHA256ش تطبیق داده شد، و هر دو
+بار تست‌ها دوباره سبز شدند. پنج فایل تست دیگر هم بعد از بازگرداندن سبز شدند.
+
+**مفسر `image.decode`.** `vlib/image` رجیستری دارد و هیچ فرمتی ثبت نکرده، پس
+`register_stbi_formats()` لازم است و در `decode_bitmap` صدا زده می‌شود. ورودی
+بایت است نه مسیر (ARCHITECTURE.md 1)، و `ByteReader` به‌صورت اشارهگر پاس
+می‌شود: یک اینترفیس که کپیِ ساختار را نگه دارد `pos` کپی را جلو می‌برد و
+نسخهٔ اصلی روی همان بایت اول می‌ماند.
+
+**دو تلهٔ V که در همین مسیر جواب دادند.** (۱) نام struct باید با حرف بزرگ
+شروع شود؛ با `struct byte_reader` پیام خطا `expression evaluated but not used`
+روی فیلدِ اولِ همان سازنده بود و هیچ ربطی به مقدارِ بی‌استفاده نداشت. (۲)
+آرایهٔ ترکیبی مثل `[['repeat', .repeat], ...]` نوعش را از عضو اول می‌گیرد، پس
+`[string, BackgroundRepeat]` به `[]string` نتیجه می‌شود؛ assertهای جدا
+جواب دادند.
+

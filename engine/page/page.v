@@ -47,20 +47,30 @@ pub struct Document {
 pub mut:
 	root   &nhtml.Tag
 	sheets []style.Sheet
-	// warnings are things that went wrong but did not stop the render: a stylesheet that
-	// could not be fetched, most often. They are collected rather than printed so that a
+	// images are the decoded background images, keyed by URL as the stylesheet
+	// wrote it. They are collected here rather than fetched by the painter because
+	// ARCHITECTURE.md 1 gives the engine no I/O: this is the module that already
+	// owns the loader for `<link>` stylesheets, and a background image is the same
+	// kind of thing. A URL with no entry here draws nothing and leaves a warning.
+	images map[string]&raster.Bitmap
+	// warnings are things that went wrong but did not stop the render: a stylesheet or
+	// an image that could not be fetched, most often. They are collected rather than printed so that a
 	// tool can show them and a library caller can decide what to do.
 	warnings []string
 }
 
 // parse turns HTML text into a document with its stylesheets collected, using `ld` to
-// resolve any `<link href>` it finds.
+// resolve any `<link href>` it finds and to fetch every image the styles reference.
 //
 // The loader is a parameter because relative stylesheet URLs have to resolve against the
 // document's own location, and that is the loader's base, not the process's working
 // directory.
 pub fn parse(src string, mut ld loader.Loader) &Document {
-	mut doc := &Document{ root: dom.parse(src), sheets: []style.Sheet{} }
+	mut doc := &Document{
+		root:   dom.parse(src)
+		sheets: []style.Sheet{}
+		images: map[string]&raster.Bitmap{}
+	}
 	doc.sheets << style.Sheet{ style: css.parse(css.user_agent_css), origin: .user_agent }
 	for el in dom.elements(doc.root) {
 		if el.name == 'style' {
@@ -92,7 +102,93 @@ pub fn parse(src string, mut ld loader.Loader) &Document {
 			}
 		}
 	}
+	doc.collect_images(mut ld)
 	return doc
+}
+
+// collect_images fetches and decodes every image the document's styles reference,
+// once each.
+//
+// It walks the declarations rather than the box tree because a URL has to be known
+// before the box that uses it is laid out, and because a style that applies to an
+// element this page does not contain should not cost a fetch. `background-image`
+// and `background` are the only two properties that can carry a URL; the others are
+// longhands of one or the other.
+//
+// A URL that cannot be fetched, or that decodes to nothing, is a warning and not a
+// failure -- the same rule a broken `<link>` follows, for the same reason. The
+// alternative is a page that renders nothing because one image 404'd.
+fn (mut d Document) collect_images(mut ld loader.Loader) {
+	mut urls := []string{}
+	for url in declaration_urls(d.sheets) {
+		if url !in urls {
+			urls << url
+		}
+	}
+	// Inline `style` attributes are scanned too, because a `style="background-image:
+	// url(...)"` is a real declaration that no stylesheet holds.
+	for el in dom.elements(d.root) {
+		attr := el.attributes['style']
+		if attr == '' {
+			continue
+		}
+		for decl in css.parse_declarations(attr) {
+			if decl.name != 'background' && decl.name != 'background-image' {
+				continue
+			}
+			for url in style.background_image_urls(decl.value) {
+				if url != '' && url !in urls {
+					urls << url
+				}
+			}
+		}
+	}
+	for url in urls {
+		res := ld.load(url) or {
+			d.warnings << 'cannot fetch image ' + url + ': ' + err.msg()
+			continue
+		}
+		bm := raster.decode_bitmap(res.body) or {
+			d.warnings << 'cannot decode image ' + url + ': ' + err.msg()
+			continue
+		}
+		d.images[url] = bm
+	}
+}
+
+// declaration_urls returns the image URLs a set of sheets refers to, descending
+// through the conditional group rules the cascade also descends through.
+fn declaration_urls(sheets []style.Sheet) []string {
+	mut out := []string{}
+	for sheet in sheets {
+		for rule in sheet.style.rules {
+			out << rule_urls(rule)
+		}
+	}
+	return out
+}
+
+fn rule_urls(rule css.Rule) []string {
+	mut out := []string{}
+	match rule {
+		css.QualifiedRule {
+			for decl in rule.declarations {
+				if decl.name == 'background' || decl.name == 'background-image' {
+					out << style.background_image_urls(decl.value)
+				}
+			}
+		}
+		css.NestedRule {
+			for inner in rule.rules {
+				out << rule_urls(inner)
+			}
+		}
+		css.AtDeclarationRule {
+			// `@font-face` and `@keyframes` describe things this engine does not
+			// draw. Neither can carry a background image.
+		}
+	}
+	return out
 }
 
 // load fetches a URL or path and parses it.
@@ -123,7 +219,7 @@ pub fn render(doc &Document, opts Options) raster.Canvas {
 	page_boxes := layout(doc, opts.width, opts.height)
 	mut canvas := raster.new_canvas(opts.width, opts.height)
 	canvas.clear(opts.background)
-	paint.render_page(page_boxes, mut canvas)
+	paint.render_page_with_images(page_boxes, doc.images, mut canvas)
 	return canvas
 }
 
@@ -153,7 +249,7 @@ pub fn boxes(src string, opts Options) []&display.Box {
 // display_list_from_document is display_list for a document already parsed, so a caller
 // that has one does not pay for a second parse.
 pub fn display_list_from_document(doc &Document, opts Options) &paint.DisplayList {
-	mut p := paint.new_painter()
+	mut p := paint.new_painter_with_images(doc.images)
 	p.paint(layout(doc, opts.width, opts.height))
 	return p.list
 }
@@ -166,7 +262,7 @@ pub fn display_list_from_document(doc &Document, opts Options) &paint.DisplayLis
 pub fn display_list(src string, opts Options) &paint.DisplayList {
 	mut ld := loader.Loader{ base: '.' }
 	doc := parse(src, mut ld)
-	mut p := paint.new_painter()
+	mut p := paint.new_painter_with_images(doc.images)
 	p.paint(layout(doc, opts.width, opts.height))
 	return p.list
 }

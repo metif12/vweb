@@ -514,6 +514,176 @@ fn test_background_colour_longhand() {
 	assert s.background_color == raster.rgb(1, 2, 3)
 }
 
+// --- background images -------------------------------------------------------
+
+fn test_background_image_is_a_reference_and_not_bytes() {
+	// ARCHITECTURE.md 1: the engine has no I/O, so what the cascade stores is the
+	// URL as written and nothing else. No file is opened to compute this style.
+	e := author_engine('p { background-image: url(pics/a.png) }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.background_image == 'pics/a.png'
+}
+
+fn test_background_image_none_and_the_initial_value() {
+	e := author_engine('p { background-image: none }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.background_image == ''
+	assert initial().background_image == ''
+}
+
+fn test_background_image_a_quoted_url_is_unquoted() {
+	// `url("a.png")` tokenises as a function plus a string and comes back from the
+	// CSSOM with the quotes still on, so the parser has to strip them.
+	e := author_engine('p { background-image: url("a.png") }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.background_image == 'a.png'
+}
+
+fn test_background_image_a_gradient_records_no_image() {
+	// A `linear-gradient` is a valid CSS image, so the declaration is honoured as
+	// far as it goes: it beats a lower-specificity url() even though nothing is
+	// drawn for it yet.
+	e := author_engine('p { background-image: linear-gradient(red, blue) }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.background_image == ''
+}
+
+fn test_background_image_is_not_inherited() {
+	mut parent := initial()
+	parent.background_image = 'pics/a.png'
+	e := author_engine('')
+	s := style_of(e, el('span', '', ''), parent, default_context())
+	assert s.background_image == ''
+}
+
+fn test_background_image_urls_scan_the_components_of_a_shorthand() {
+	// The whole value matches neither `url(` at the start nor `)` at the end, so a
+	// caller reading it whole finds nothing. That is what the first hand render of
+	// `background: url(t) repeat` did: no image, and no warning either.
+	assert background_image_urls('red url(a.png) no-repeat') == ['a.png']
+	assert background_image_urls('url(a.png)') == ['a.png']
+	assert background_image_urls('#fff url("a.png") center / cover') == ['a.png']
+	assert background_image_urls('none').len == 0
+	assert background_image_urls('linear-gradient(red, blue)').len == 0
+	assert background_image_urls('red').len == 0
+}
+
+// --- background repeat -------------------------------------------------------
+
+fn test_background_repeat_every_keyword() {
+	e1 := author_engine('p { background-repeat: repeat }')
+	assert style_of(e1, el('p', '', ''), initial(), default_context()).background_repeat == .repeat
+	e2 := author_engine('p { background-repeat: repeat-x }')
+	assert style_of(e2, el('p', '', ''), initial(), default_context()).background_repeat == .repeat_x
+	e3 := author_engine('p { background-repeat: repeat-y }')
+	assert style_of(e3, el('p', '', ''), initial(), default_context()).background_repeat == .repeat_y
+	e4 := author_engine('p { background-repeat: no-repeat }')
+	assert style_of(e4, el('p', '', ''), initial(), default_context()).background_repeat == .no_repeat
+}
+
+fn test_background_repeat_space_and_round_are_rejected() {
+	// They change the tile's size rather than where it starts, and dropping the
+	// declaration falls back to the initial `repeat`, which is what `space` looks
+	// like on a tile that divides the box evenly.
+	e := author_engine('p { background-repeat: space }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.background_repeat == .repeat
+}
+
+// --- background position -----------------------------------------------------
+
+fn test_background_position_keywords() {
+	e := author_engine('p { background-position: left top }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.background_position.x.kind == .percent
+	assert s.background_position.x.percent == 0.0
+	assert s.background_position.y.percent == 0.0
+}
+
+fn test_background_position_one_component_centres_the_other_axis() {
+	// CSS: a single component is the horizontal one and the vertical defaults to
+	// `center`. `background-position: left` is the left edge, vertically centred.
+	e := author_engine('p { background-position: left }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.background_position.x.percent == 0.0
+	assert s.background_position.y.percent == 50.0
+}
+
+fn test_background_position_a_length_is_kept_as_a_length() {
+	e := author_engine('p { background-position: 10px 20% }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.background_position.x.kind == .length
+	assert s.background_position.x.length.to_px_or(default_context(), 0.0) == 10.0
+	assert s.background_position.y.kind == .percent
+	assert s.background_position.y.percent == 20.0
+}
+
+fn test_background_position_resolves_against_the_space_left_over() {
+	// Not against the area: a 40px tile at 100% in a 200px box sits at x == 160, so
+	// its right edge is flush with the area's. Against the area it would be at 200
+	// and entirely outside.
+	mut p := initial_background_position()
+	p.x = PositionComponent{ kind: .percent, percent: 100.0 }
+	x, _ := p.resolve(0, 0, 200, 200, 40, 40, default_context())
+	assert x == 160
+}
+
+// --- background size ---------------------------------------------------------
+
+fn test_background_size_defaults_to_the_images_own_size() {
+	z := initial_background_size()
+	w, h := z.resolve(200, 100, 4, 2, default_context())
+	assert w == 4
+	assert h == 2
+}
+
+fn test_background_size_lengths_and_the_aspect_ratio() {
+	z := parse_background_size('50px') or { panic('background-size') }
+	w, h := z.resolve(200, 100, 4, 2, default_context())
+	// CSS sizes the axis left `auto` from the one that was given: 4x2 at 50px wide
+	// is 25px tall, not 2px.
+	assert w == 50
+	assert h == 25
+}
+
+fn test_background_size_percentages_are_of_the_area() {
+	z := parse_background_size('50% 25%') or { panic('background-size') }
+	w, h := z.resolve(200, 100, 4, 2, default_context())
+	assert w == 100
+	assert h == 25
+}
+
+fn test_background_size_cover_takes_the_larger_ratio() {
+	z := parse_background_size('cover') or { panic('background-size') }
+	w, h := z.resolve(200, 100, 4, 2, default_context())
+	// 200/4 is 50 and 100/2 is 50, so the tile is exactly the area here. A 2x1
+	// image instead would be scaled by 200 and stand 200 tall.
+	assert w == 200
+	assert h == 100
+}
+
+fn test_background_size_contain_takes_the_smaller_ratio() {
+	z := parse_background_size('contain') or { panic('background-size') }
+	w, h := z.resolve(200, 100, 4, 2, default_context())
+	assert w == 200
+	assert h == 100
+}
+
+fn test_background_size_contain_leaves_the_smaller_axis_short() {
+	z := parse_background_size('contain') or { panic('background-size') }
+	w, h := z.resolve(200, 100, 4, 4, default_context())
+	// 200/4 is 50 and 100/4 is 25, so the smaller ratio wins and the tile is
+	// 100x100 inside a 200x100 area.
+	assert w == 100
+	assert h == 100
+}
+
+fn test_background_size_rejects_more_than_two_components() {
+	if _ := parse_background_size('1px 2px 3px') {
+		assert false, 'expected three components to be rejected'
+	}
+}
+
 // --- individual properties --------------------------------------------------
 
 fn test_keyword_values() {

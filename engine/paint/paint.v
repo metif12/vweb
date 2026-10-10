@@ -2,6 +2,7 @@ module paint
 
 import engine.display
 import engine.raster
+import engine.style
 
 // Turning a box tree into a display list.
 //
@@ -29,10 +30,24 @@ import engine.raster
 pub struct Painter {
 pub mut:
 	list &DisplayList
+	// images are the decoded background images, keyed by URL exactly as the
+	// stylesheet wrote it. The painter is handed them rather than fetching them,
+	// because ARCHITECTURE.md 1 gives the engine no I/O: a URL is a reference and
+	// `engine/page` -- the module that owns the loader -- is what turns one into
+	// bytes. A URL with no entry here draws nothing, which is how a broken image
+	// degrades instead of failing the render.
+	images map[string]&raster.Bitmap
 }
 
 pub fn new_painter() &Painter {
-	return &Painter{ list: new_list() }
+	return &Painter{ list: new_list(), images: map[string]&raster.Bitmap{} }
+}
+
+// new_painter_with_images is the constructor for a caller that has decoded the
+// page's background images. An empty map is the same as `new_painter`, and is what
+// a caller with no images passes rather than being handed a default it cannot see.
+pub fn new_painter_with_images(images map[string]&raster.Bitmap) &Painter {
+	return &Painter{ list: new_list(), images: images }
 }
 
 // paint appends every drawing operation for the tree, in compositing order.
@@ -68,6 +83,42 @@ fn (mut p Painter) box(b &display.Box) {
 
 fn (mut p Painter) background(b &display.Box) {
 	p.list.fill_rect(b.rect, b.style.background_color)
+	if b.style.background_image == '' {
+		return
+	}
+	// A URL the caller could not fetch or decode has no bitmap, so there is no
+	// command: the box keeps its background colour and nothing else happens. No
+	// error, no panic -- a page with a broken image is still a page.
+	bm := p.images[b.style.background_image] or { return }
+	if bm.width <= 0 || bm.height <= 0 {
+		return
+	}
+	// The percentage basis of a background-size or background-position is the box's
+	// own rectangle, which only this function has. `size_context` supplies the font
+	// sizes; see the note there about `rem`.
+	ctx := size_context(b)
+	tile_w, tile_h := b.style.background_size.resolve(b.rect.width, b.rect.height,
+		bm.width, bm.height, &ctx)
+	if tile_w <= 0 || tile_h <= 0 {
+		return
+	}
+	tile_x, tile_y := b.style.background_position.resolve(b.rect.x, b.rect.y, b.rect.width,
+		b.rect.height, tile_w, tile_h, &ctx)
+	p.list.image(b.rect, tile_x, tile_y, tile_w, tile_h, bm, b.style.background_repeat)
+}
+
+// size_context is the context a background-position or background-size length
+// resolves against.
+//
+// `em` is answered with the box's own font size, which is right: the box is the
+// element whose background it is. `rem`, `vw` and `vh` are answered with the same
+// number, because a box tree carries neither the root font size nor the viewport
+// and `engine/display` -- the module that would hold them -- belongs to another
+// stream. That is a recorded gap rather than a choice, and it costs nothing on any
+// value written in pixels or percentages, which is what background-size is written
+// with in practice.
+fn size_context(b &display.Box) style.Context {
+	return style.Context{ font_size: b.font_size, root_font_size: b.font_size }
 }
 
 // borders draws the four sides as bands inside the border box.
@@ -176,6 +227,16 @@ fn round_up(v f64) f64 {
 // two steps.
 pub fn render_page(root &display.Box, mut canvas &raster.Canvas) &DisplayList {
 	mut p := new_painter()
+	p.paint(root)
+	composite(mut canvas, p.list)
+	return p.list
+}
+
+// render_page_with_images is render_page for a caller that has decoded the page's
+// background images. A caller with no images should pass `render_page`, which is
+// the same call with an empty map.
+pub fn render_page_with_images(root &display.Box, images map[string]&raster.Bitmap, mut canvas &raster.Canvas) &DisplayList {
+	mut p := new_painter_with_images(images)
 	p.paint(root)
 	composite(mut canvas, p.list)
 	return p.list
