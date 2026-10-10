@@ -676,6 +676,20 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 // a million is wider than any line a page can lay out.
 const unbreakable_width = 1_000_000
 
+// max_relayout_passes is the relayout ceiling of ARCHITECTURE.md section 5: how many
+// times a box may be laid out again at a resolved width before the engine gives up and
+// keeps what it has. Browsers manage about four, and the number is here so that the
+// protocol is bounded rather than trusting every layout to stabilise.
+//
+// A ceiling is not decoration here. Relayout is a feedback loop: a percentage width
+// inside a shrink-to-fit box is a fraction of the very width the box is trying to work
+// out, so without something to stop it the sequence can keep moving for ever. With the
+// rules this engine implements today the loop converges on its first pass -- because
+// `intrinsic_atom_width` stops a percentage contributing a provisional width, so the
+// clamp is a one-step function of the content -- and the ceiling is the guard for the
+// rules that arrive later, where it will not be.
+const max_relayout_passes = 4
+
 // place_atomic lays out one atomic inline-level box that sits inside a line of this
 // block, sized to fit the space that line has for it.
 //
@@ -683,7 +697,6 @@ const unbreakable_width = 1_000_000
 // box's own margins take their share. The position it is given here is temporary --
 // the line layout places the box where it actually landed when it shapes the line.
 fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
-	mut containing := line_width
 	// CSS 2.1 10.3.9: `width: auto` on an inline-block is shrink-to-fit,
 	// min(max(preferred minimum, available), preferred) -- and not "fill the line",
 	// which is what the same `auto` means on a block. The two are one `display` value
@@ -691,33 +704,47 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int) {
 	// `<span style="display:inline-block">text</span>` take the whole width of the
 	// paragraph around it.
 	//
-	// An explicit width is left to `box_width`, where it was already right.
-	if bx.style.width.unit == .auto || bx.style.width.unit == .none {
-		bx_ctx := l.context(bx.font_size)
-		bx_margin := edges_of(bx.style.margin, &bx_ctx, f64(line_width))
-		// Measure first. The intrinsic widths the clamp is against do not exist until
-		// the box has been laid out, and they have to be the content's own: laid out
-		// at the width it is really going to get, an atomic inside it would already
-		// have shrunk itself to that width, and this box's max-content would be
-		// measured as the space it was given rather than as the width of its content.
-		l.place(mut bx, unbreakable_width, x, y, false)
-		// What is left of the line for the box's *border box*. The intrinsic widths carry
-		// the box's own padding and border -- a parent sizing itself to a child has to
-		// reserve them, which is why a padded box's intrinsic widths are wider than an
-		// unpadded one's by exactly its frame -- so the frame belongs inside the clamp
-		// rather than coming off the space. Taking it off both sides would understate the
-		// space by the frame and every padded inline-block would come out one frame too
-		// narrow.
-		available := line_width - bx_margin.left - bx_margin.right
-		fitted := min_of(max_of(bx.min_content_width, available), bx.max_content_width)
-		// The margins are handed back as containing width so that `place`'s own
-		// `available` comes out as `fitted` less the frame, and its rect as `fitted`.
-		containing = fitted + bx_margin.left + bx_margin.right
+	// An explicit width is left to `box_width`, where it was already right, and there is
+	// nothing to relayout: the width is the fact.
+	if bx.style.width.unit != .auto && bx.style.width.unit != .none {
+		l.place(mut bx, line_width, x, y, false)
+		return
 	}
-	// The second pass is a complete replacement, not an adjustment: `place` assigns
-	// `rect`, `content`, `glyphs` and `border_px` rather than adding to any of them, so
-	// the measure pass leaves nothing behind that the real one has to undo.
-	l.place(mut bx, containing, x, y, false)
+	bx_ctx := l.context(bx.font_size)
+	bx_margin := edges_of(bx.style.margin, &bx_ctx, f64(line_width))
+	// What is left of the line for the box's *border box*. The intrinsic widths carry the
+	// box's own padding and border -- a parent sizing itself to a child has to reserve
+	// them, which is why a padded box's intrinsic widths are wider than an unpadded
+	// one's by exactly its frame -- so the frame belongs inside the clamp rather than
+	// coming off the space. Taking it off both sides would understate the space by the
+	// frame and every padded inline-block would come out one frame too narrow.
+	available := line_width - bx_margin.left - bx_margin.right
+	// Probe. The intrinsic widths the clamp is against do not exist until the box has
+	// been laid out, and they have to be the content's own: laid out at the width it is
+	// really going to get, an atomic inside it would already have shrunk itself to that
+	// width, and this box's max-content would be measured as the space it was given
+	// rather than as the width of its content.
+	l.place(mut bx, unbreakable_width, x, y, false)
+	// The margins are handed back as containing width so that `place`'s own `available`
+	// comes out as `fitted` less the frame, and its rect as `fitted`.
+	mut assumed := atomic_fit(bx, available) + bx_margin.left + bx_margin.right
+	// The relayout protocol, ARCHITECTURE.md section 5: lay the box out at the width this
+	// pass settled on, and if the content then resolves to a different width, lay it out
+	// again there. What the next pass is laid out at *is* the protocol's `reflow_at` --
+	// the width the pass just used was an assumption, and this is the fact that replaces
+	// it. A pass whose own answer is the width it already used is the final layout.
+	for pass := 1; pass < max_relayout_passes; pass++ {
+		l.place(mut bx, assumed, x, y, false)
+		next := atomic_fit(bx, available) + bx_margin.left + bx_margin.right
+		if next == assumed {
+			return
+		}
+		assumed = next
+	}
+	// The ceiling. Every pass changed the answer, so stop with the width we settled on
+	// rather than moving again: a resolution that has not stabilised in `max_relayout_passes`
+	// passes is a cycle, and the last width is the deterministic one to keep.
+	l.place(mut bx, assumed, x, y, false)
 }
 
 // zero_width_sides applies the used border-width rule of CSS 2.1 10.3.3: a side whose
@@ -1101,9 +1128,10 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 	mut mx := 0.0
 	mut mn := 0.0
 	for a in atoms {
-		mx += a.width
-		if !a.space && a.width > mn {
-			mn = a.width
+		w := intrinsic_atom_width(a)
+		mx += w
+		if !a.space && w > mn {
+			mn = w
 		}
 	}
 	// Rounded *up*, not to nearest. These are upper bounds on what the content needs, and
@@ -1250,6 +1278,38 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 		y += line_height
 	}
 	return out
+}
+
+// intrinsic_atom_width is the width an atom contributes to its box's intrinsic
+// widths, which is not the width it happened to be laid out at.
+//
+// An atomic box with a percentage width is the case that forced this to exist, and it
+// is ARCHITECTURE.md section 5's case exactly. `place_atomic` probes a shrink-to-fit
+// box at `unbreakable_width` so that the content's intrinsic widths are its own, so a
+// `width: 50%` child inside it resolves against that probe and comes out at half of a
+// million. Folding *that* into the parent's max-content made the parent's intrinsic
+// width 250,000, the shrink-to-fit clamp `min(max(min-content, available), max-content)`
+// then answered 250,000 instead of the 400 the line had, and a fourteen-pixel word
+// rendered inside a box half a million pixels wide. Measured: 500,000 and 800,000 for
+// 50% and 80% in a 400px viewport, where the correct answers are the content's own
+// width.
+//
+// A percentage of a base that is itself being measured is not a width, so it cannot
+// contribute one. CSS resolves this the same way -- percentages are treated as `auto`
+// during intrinsic sizing -- so the box's own content width is the answer, and that is
+// what this returns.
+fn intrinsic_atom_width(a Atom) f64 {
+	if a.is_box && a.box != nil && a.box.style.width.unit == .percent {
+		return f64(a.box.max_content_width)
+	}
+	return a.width
+}
+
+// atomic_fit is the shrink-to-fit clamp of CSS 2.1 10.3.9: the box takes the preferred
+// width, held between the preferred minimum and the space available. The intrinsic
+// widths it reads carry the box's own frame, so the result is a border-box width.
+fn atomic_fit(bx &Box, available int) int {
+	return min_of(max_of(bx.min_content_width, available), bx.max_content_width)
 }
 
 fn fmax(a f64, b f64) f64 {

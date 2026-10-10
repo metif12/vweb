@@ -45,10 +45,6 @@ fn text_el(content string) &html.Tag {
 	return &html.Tag{ name: 'text', content: content }
 }
 
-// attach makes parent the parent of each child, both ways round. It takes mut on
-// the pointer because V 0.5.2 only writes through a pointer parameter declared that
-// way: mut p := parent silently copies the Tag and the tree stays empty, which
-// shows up much later as a nil box rather than as a missing child.
 // attach makes parent the parent of each child, both ways round.
 //
 // V 0.5.2 will not let a loop variable over an immutable slice be written through
@@ -1591,4 +1587,81 @@ fn test_an_atomic_inline_box_is_placed_by_the_rtl_pen() {
 	// The LTR twin is untouched: the atomic at the left edge and the text after it.
 	assert ltr.atomics[0].rect.x == ltr.content.x
 	assert min_x_of(ltr.glyphs) == f64(ltr.content.x + ltr.atomics[0].rect.width)
+}
+
+// --- the relayout protocol: a percentage inside a shrink-to-fit box ------------
+
+// percentage_in_atomic builds a 400px div holding an inline-block whose only content
+// is another inline-block with a percentage width, and returns both.
+//
+// This is ARCHITECTURE.md section 5's case in one tree: the outer box's width is
+// *measured* rather than known, so the inner percentage is resolved against whatever
+// base the measurement happens to use.
+fn percentage_in_atomic(viewport int, pct string) (&Box, &Box) {
+	mut body := el('body', '', '')
+	mut d := el('div', 'd', '')
+	mut p := el('span', 'p', '')
+	mut q := el('span', 'q', '')
+	attach(mut q, text_el('hi'))
+	attach(mut p, q)
+	attach(mut d, p)
+	attach(mut body, d)
+	root := layouter('div { width: ${viewport}px } #p { display: inline-block } #q { display: inline-block; width: ${pct} }',
+		viewport).layout(body)
+	db := box_for(root, 'd')
+	pbox := db.children[0].atomics[0]
+	qbox := pbox.children[0].atomics[0]
+	return pbox, qbox
+}
+
+fn test_a_percentage_inside_a_shrink_to_fit_box_is_not_measured_against_the_probe_width() {
+	// Before the fix the outer box came out 500,000 px wide in a 400 px viewport: the
+	// measure pass lays the box out at `unbreakable_width`, the inner `width: 50%`
+	// resolved against it to 250,000, and that provisional number was folded into the
+	// outer box's intrinsic width -- so the shrink-to-fit clamp returned the absurdity
+	// instead of the space available.
+	p, q := percentage_in_atomic(400, '50%')
+	// It hugs its own content, which is the inner box's content width, because that is
+	// narrower than the line.
+	assert p.rect.width == p.max_content_width
+	// And the percentage resolved against the width it *finally got*, not the probe.
+	assert q.rect.width == p.rect.width / 2
+}
+
+fn test_a_wider_percentage_still_cannot_push_the_box_past_the_line() {
+	// The same shape at 80%, and against a viewport narrower than the content: the box
+	// may overflow, but it may not be measured as a fraction of the probe width.
+	p, _ := percentage_in_atomic(60, '80%')
+	assert p.rect.width == p.max_content_width
+	assert p.min_content_width > 0
+}
+
+fn test_an_explicit_width_inside_a_shrink_to_fit_box_is_untouched() {
+	// The rule is about a *percentage*, not about atomic boxes in general. An atomic
+	// with a definite width still contributes that width, and the outer box still hugs
+	// the content it is given.
+	mut body := el('body', '', '')
+	mut d := el('div', 'd', '')
+	mut p := el('span', 'p', '')
+	mut q := el('span', 'q', '')
+	attach(mut q, text_el('hi'))
+	attach(mut p, text_el('a'), q, text_el('b'))
+	attach(mut d, p)
+	attach(mut body, d)
+	root := layouter('div { width: 400px } #p { display: inline-block } #q { display: inline-block; width: 30px }',
+		400).layout(body)
+	pbox := box_for(root, 'd').children[0].atomics[0]
+	qbox := pbox.children[0].atomics[0]
+	assert qbox.rect.width == 30
+	assert pbox.rect.width == pbox.max_content_width
+}
+
+fn test_the_relayout_of_a_percentage_is_deterministic() {
+	// The architecture forbids nondeterminism, and a protocol that re-asks a layout
+	// is exactly where a machine-dependent answer would creep in.
+	first_p, first_q := percentage_in_atomic(400, '50%')
+	second_p, second_q := percentage_in_atomic(400, '50%')
+	assert first_p.rect.width == second_p.rect.width
+	assert first_q.rect.width == second_q.rect.width
+	assert first_p.max_content_width == second_p.max_content_width
 }
