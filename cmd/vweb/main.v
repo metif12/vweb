@@ -52,7 +52,13 @@ fn main() {
 		out_path = default_out_path(target)
 	}
 
-	mut ld := loader.Loader{ base: '.' }
+	// The base is the *page's* directory, not the process's working directory. Every
+	// relative URL a page carries -- a `url(tile.png)` background, a `<link href>` -- is
+	// relative to where the page was found, and resolving it against `.` instead makes
+	// the same page render differently depending on which directory the tool was run
+	// from. `os.dir` returns `.` for a bare name, which is the right answer for that
+	// case, so it needs no special handling here.
+	mut ld := loader.Loader{ base: os.dir(target) }
 	doc := page.load(target, mut ld) or {
 		eprintln('vweb: ' + err.msg())
 		exit(1)

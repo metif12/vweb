@@ -168,6 +168,27 @@ fn test_a_page_loads_from_a_path_and_writes_a_png() {
 	assert sig == '\x89PNG'
 }
 
+fn test_a_relative_image_url_resolves_against_the_page_not_the_process() {
+	// The bug this locks down is in the tool, not the pipeline: `cmd/vweb` built its
+	// loader with `base: '.'`, so `url(tile.png)` resolved against whatever directory
+	// the tool happened to be run from. The same page rendered one way from one
+	// directory and lost its image from another, and the only symptom was a warning --
+	// the page still drew, so nothing looked broken. Every real page carries relative
+	// URLs, which makes this Phase 3's gate failing quietly.
+	//
+	// The pipeline is already covered by `test_a_background_image_is_fetched_decoded_and_composited`;
+	// what this pins is the rule the CLI relies on -- the base is the *page's* directory,
+	// derived from its path -- which is the half that was wrong.
+	img := tmp('cli-tile.png')
+	write_solid_png(img, 4, 4, tile_color)
+	page_path := write_page('cli-relative.html', '<html><head><style>.hero { background-image: url(cli-tile.png) }</style></head><body><div class="hero">x</div></body></html>')
+	// What the tool does: the page's own directory, derived from its path.
+	mut ld := loader.Loader{ base: os.dir(page_path) }
+	doc := page.load(page_path, mut ld) or { panic(err) }
+	assert doc.warnings.len == 0, 'a relative image beside the page must not warn: ' + doc.warnings.join('; ')
+	assert doc.images.len == 1, 'the image should have been fetched'
+}
+
 fn test_load_reports_a_missing_file() {
 	// An error, not a panic and not an empty image.
 	mut ld := loader.Loader{ base: '.' }
