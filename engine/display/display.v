@@ -329,7 +329,127 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 	if box := inline_box(pending, s, child_ctx.font_size) {
 		b.children << box
 	}
+	// A table's children are rows inside row groups, and a stylesheet is free to omit
+	// the row group: `<table><tr>` is the common form. CSS 2.1 17.2.1 requires the
+	// missing wrappers to be generated, and without them the rows are laid out by block
+	// layout -- two empty divs, which is the most common way a table page silently
+	// falls apart and says nothing.
+	wrap_table_children(mut b)
 	return b
+}
+
+// anonymous_table_box makes a box for one of the internal table structures CSS 2.1
+// 17.2.1 requires. The style is the parent's *inherited* properties with the display
+// set to `d`, because an anonymous box has no author properties of its own: copying
+// the parent's whole Style would carry its border, padding and width into the wrapper,
+// and a `width: 400px` table would then also be a 400px row group.
+fn anonymous_table_box(parent style.Style, d style.Display) &Box {
+	mut s := style.initial()
+	s.inherit_from(&parent)
+	s.display = d
+	return &Box{
+		style:        s
+		is_anonymous: true
+	}
+}
+
+// wrap_table_children applies the anonymous-box rules of CSS 2.1 17.2.1 to the
+// children of a table wrapper or a row group.
+//
+// Two rules, both of which a real page depends on:
+//
+//   - a run of `table-row` children directly under a table becomes one anonymous row
+//     group, because rows are laid out by the table and not by block layout;
+//   - a child of a table wrapper that is not a row, a row group or a column -- a stray
+//     text node, a `<div>` -- is wrapped in an anonymous row group, row and cell, so
+//     that it is laid out inside the table instead of being dropped or misplaced.
+//
+// The second rule is why this is a separate pass and not a branch in the child loop:
+// by the time the loop has finished, the stray content is already a box of its own.
+fn wrap_table_children(mut b &Box) {
+	d := b.style.display
+	if !d.is_table() && !d.is_table_row_group() {
+		return
+	}
+	mut out := []&Box{}
+	mut i := 0
+	for i < b.children.len {
+		cd := b.children[i].style.display
+		if d.is_table() && cd == .table_row {
+			// One anonymous group per *run* of rows, not one per row: `<table><tr>…<tr>…`
+			// is one group, and a `<tbody>` between them is its own.
+			mut rows := []&Box{}
+			for i < b.children.len && b.children[i].style.display == .table_row {
+				mut r := b.children[i]
+				wrap_row_children(mut r)
+				rows << r
+				i++
+			}
+			mut g := anonymous_table_box(b.style, .table_row_group)
+			g.children = rows
+			out << g
+			continue
+		}
+		if cd.is_table_row_group() {
+			mut g := b.children[i]
+			wrap_table_children(mut g)
+			out << g
+			i++
+			continue
+		}
+		// A row inside a row group is exactly what belongs there, so it is kept and only
+		// its own children are wrapped. Missing this case wrapped the rows of a `<tbody>`
+		// into anonymous cells, which left the table with no rows at all and made it
+		// render as nothing -- the form every real page writes, and the one the first
+		// version of this got wrong because only the bare-row form had a test.
+		if d.is_table_row_group() && cd == .table_row {
+			mut r := b.children[i]
+			wrap_row_children(mut r)
+			out << r
+			i++
+			continue
+		}
+		if cd == .table_caption {
+			out << b.children[i]
+			i++
+			continue
+		}
+		// A column or column group generates no box this engine lays out: the column
+		// widths come from the cells, which is where CSS 2.1's own table puts them when
+		// there are no `<col>` elements.
+		if cd == .table_column || cd == .table_column_group {
+			i++
+			continue
+		}
+		mut cell := anonymous_table_box(b.style, .table_cell)
+		cell.children << b.children[i]
+		mut row := anonymous_table_box(b.style, .table_row)
+		row.children << cell
+		mut group := anonymous_table_box(b.style, .table_row_group)
+		group.children << row
+		out << group
+		i++
+	}
+	b.children = out
+}
+
+// wrap_row_children wraps anything inside a row that is not a cell in an anonymous
+// cell, which is the same rule one level down: a row's children are cells.
+fn wrap_row_children(mut b &Box) {
+	if b.style.display != .table_row {
+		return
+	}
+	mut out := []&Box{}
+	for c in b.children {
+		if c.style.display.is_table_cell() || c.style.display == .table_caption {
+			out << c
+			continue
+		}
+		mut cell := anonymous_table_box(b.style, .table_cell)
+		cell.children << c
+		out << cell
+	}
+	b.children = out
 }
 
 // inline_box turns accumulated inline runs into an anonymous box, or into nothing when
@@ -816,84 +936,96 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 
 	mut previous_bottom := 0
 	mut first := true
-	// Indexed rather than ranged: `for child_ref in b.children { mut child := child_ref }`
-	// makes a mutable reference to an immutable loop variable, which V reports as a
-	// notice and which is one copy away from writing to the wrong box.
-	mut i := 0
-	for i < b.children.len {
-		mut child := b.children[i]
-		cs := child.style
-		child_ctx := l.context(child.font_size)
-		cm := edges_of(cs.margin, &child_ctx, f64(content_width))
-		// Adjacent siblings' margins collapse to the larger of the two. This is the
-		// whole reason `p { margin: 1em 0 }` looks right.
-		mut top := cm.top
-		if !first {
-			top = max_of(previous_bottom, cm.top)
-		}
-		if out_of_flow(cs.position) {
-			// CSS 2.1 9.6, and both halves of it are rules rather than consequences of
-			// where the box is stored. It does not advance the cursor, and it does not
-			// collapse its margins with a sibling's, so the in-flow box after it keeps
-			// the place it had. That is the same pair of rules a float follows, for the
-			// same reason.
-			//
-			// What is recorded here is the place the box *would* have taken. `left:
-			// auto` resolves to exactly that (CSS 2.1 10.3.7 rule 3), and it is the
-			// static-position fallback that a box positioned by `top` alone still needs
-			// for its horizontal coordinate. It has to be captured while the cursor is
-			// here: by the time the box is placed, the cursor has moved past it.
-			child.static_x = content_x
-			child.static_y = cursor + top
-			b.absolutes << child
-			// The next sibling is no longer the first, but an out-of-flow box leaves no
-			// bottom margin behind it either, so `previous_bottom` keeps whatever the
-			// last in-flow box left.
+	// A table is the one box whose children are not laid out by block layout at all:
+	// its rows are sized by the column grid and its cells by the row they are in. So
+	// the child loop below is skipped for one, and `layout_table` does the work. The
+	// table's own height is then the rows' sum, which is what `cursor` becomes, so the
+	// rest of this function -- the content rect, the height clamps -- needs no special
+	// case for it.
+	if s.display.is_table() {
+		th := l.layout_table(mut b, &ctx, content_x, content_y, content_width, cb)
+		b.content = Rect{ x: content_x, y: content_y, width: content_width, height: th }
+		cursor += th
+	} else {
+		// Indexed rather than ranged: `for child_ref in b.children { mut child := child_ref }`
+		// makes a mutable reference to an immutable loop variable, which V reports as a
+		// notice and which is one copy away from writing to the wrong box.
+		mut i := 0
+		for i < b.children.len {
+			mut child := b.children[i]
+			cs := child.style
+			child_ctx := l.context(child.font_size)
+			cm := edges_of(cs.margin, &child_ctx, f64(content_width))
+			// Adjacent siblings' margins collapse to the larger of the two. This is the
+			// whole reason `p { margin: 1em 0 }` looks right.
+			mut top := cm.top
+			if !first {
+				top = max_of(previous_bottom, cm.top)
+			}
+			if out_of_flow(cs.position) {
+				// CSS 2.1 9.6, and both halves of it are rules rather than consequences of
+				// where the box is stored. It does not advance the cursor, and it does not
+				// collapse its margins with a sibling's, so the in-flow box after it keeps
+				// the place it had. That is the same pair of rules a float follows, for the
+				// same reason.
+				//
+				// What is recorded here is the place the box *would* have taken. `left:
+				// auto` resolves to exactly that (CSS 2.1 10.3.7 rule 3), and it is the
+				// static-position fallback that a box positioned by `top` alone still needs
+				// for its horizontal coordinate. It has to be captured while the cursor is
+				// here: by the time the box is placed, the cursor has moved past it.
+				child.static_x = content_x
+				child.static_y = cursor + top
+				b.absolutes << child
+				// The next sibling is no longer the first, but an out-of-flow box leaves no
+				// bottom margin behind it either, so `previous_bottom` keeps whatever the
+				// last in-flow box left.
+				first = false
+				i++
+				continue
+			}
+			if cs.float != .none {
+				// A floated box is out of the flow, and both halves of that are rules rather
+				// than a consequence of the data structure. It does not collapse its margins
+				// with a sibling's -- margins of floating boxes never collapse, CSS 2.1 9.5.1
+				// -- and it does not advance the cursor, so the box that follows it is laid
+				// out where it would have been anyway. That second half is the visible one:
+				// it is the difference between text wrapping beside a float and text pushed
+				// below it.
+				at := cursor + cm.top
+				l.place_float(mut child, content_width, content_x, at + clear_push(floats, cs.clear,
+					at), child_cb, mut floats)
+				// The next sibling is no longer the first, but a float leaves no bottom
+				// margin behind it: it does not participate in collapsing, so `previous_bottom`
+				// must keep whatever the last in-flow box left.
+				first = false
+				i++
+				continue
+			}
+			cursor += top
+			// `clear` is the one property that moves a box below a float, and it is applied
+			// to the position the collapsing settled on: the clearance is how much further
+			// the box must move for its border box top to be below the bottom of every
+			// earlier float on the sides it names (CSS 2.1 9.5.2).
+			cursor += clear_push(floats, cs.clear, cursor)
+			// Only an only-child box can collapse through to its parent's edge.
+			is_last := b.children.len == 1
+			if cs.display == .flow_root {
+				// A flow root is a new block formatting context (CSS 2.1 9.4.1), so the
+				// floats generated inside it shorten the lines inside it and nothing outside
+				// it. That is the whole of what `display: flow-root` is for, and it is the
+				// one difference between it and a plain block.
+				mut inner := []&Box{}
+				cursor += l.place(mut child, content_width, content_x, cursor, is_last, child_cb,
+					mut inner)
+			} else {
+				cursor += l.place(mut child, content_width, content_x, cursor, is_last, child_cb,
+					mut floats)
+			}
+			previous_bottom = cm.bottom
 			first = false
 			i++
-			continue
 		}
-		if cs.float != .none {
-			// A floated box is out of the flow, and both halves of that are rules rather
-			// than a consequence of the data structure. It does not collapse its margins
-			// with a sibling's -- margins of floating boxes never collapse, CSS 2.1 9.5.1
-			// -- and it does not advance the cursor, so the box that follows it is laid
-			// out where it would have been anyway. That second half is the visible one:
-			// it is the difference between text wrapping beside a float and text pushed
-			// below it.
-			at := cursor + cm.top
-			l.place_float(mut child, content_width, content_x, at + clear_push(floats, cs.clear,
-				at), child_cb, mut floats)
-			// The next sibling is no longer the first, but a float leaves no bottom
-			// margin behind it: it does not participate in collapsing, so `previous_bottom`
-			// must keep whatever the last in-flow box left.
-			first = false
-			i++
-			continue
-		}
-		cursor += top
-		// `clear` is the one property that moves a box below a float, and it is applied
-		// to the position the collapsing settled on: the clearance is how much further
-		// the box must move for its border box top to be below the bottom of every
-		// earlier float on the sides it names (CSS 2.1 9.5.2).
-		cursor += clear_push(floats, cs.clear, cursor)
-		// Only an only-child box can collapse through to its parent's edge.
-		is_last := b.children.len == 1
-		if cs.display == .flow_root {
-			// A flow root is a new block formatting context (CSS 2.1 9.4.1), so the
-			// floats generated inside it shorten the lines inside it and nothing outside
-			// it. That is the whole of what `display: flow-root` is for, and it is the
-			// one difference between it and a plain block.
-			mut inner := []&Box{}
-			cursor += l.place(mut child, content_width, content_x, cursor, is_last, child_cb,
-				mut inner)
-		} else {
-			cursor += l.place(mut child, content_width, content_x, cursor, is_last, child_cb,
-				mut floats)
-		}
-		previous_bottom = cm.bottom
-		first = false
-		i++
 	}
 
 	// Atomic inline-level boxes have to be sized before the text is laid out, because the
@@ -936,6 +1068,11 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 		b.content = Rect{ x: content_x, y: content_y, width: content_width, height: line_height }
 		cursor += line_height
 		previous_bottom = 0
+	} else if s.display.is_table() {
+		// A table's content rect was already set by `layout_table`, with the rows' sum
+		// for its height. Overwriting it here -- which is what this branch does for
+		// every other box that has children -- would leave a table reporting zero
+		// height and make its parent's next sibling start at the same y.
 	} else {
 		b.content = Rect{ x: content_x, y: content_y, width: content_width }
 	}
@@ -970,7 +1107,7 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 			child_min = n
 		}
 	}
-	if b.children.len > 0 {
+	if b.children.len > 0 && !s.display.is_table() {
 		b.max_content_width = child_max + frame
 		b.min_content_width = child_min + frame
 	}
@@ -1156,6 +1293,330 @@ fn (mut l Layouter) place_atomic(mut bx &Box, line_width int, x int, y int, cb C
 	// rather than moving again: a resolution that has not stabilised in `max_relayout_passes`
 	// passes is a cycle, and the last width is the deterministic one to keep.
 	l.place_root(mut bx, assumed, x, y, cb)
+}
+
+// table_rows is the table's rows in document order: the rows of each row group, and a
+// row that was a direct child, which `wrap_table_children` has already put inside a
+// group. It returns the row boxes themselves, so a caller sizing a column writes
+// through the same pointers the tree holds.
+fn table_rows(b &Box) []&Box {
+	mut out := []&Box{}
+	for g in b.children {
+		if g.style.display.is_table_row_group() {
+			for r in g.children {
+				if r.style.display == .table_row {
+					out << r
+				}
+			}
+			continue
+		}
+		if g.style.display == .table_row {
+			out << g
+		}
+	}
+	return out
+}
+
+// table_cells is a row's cells in document order, skipping the caption if one was
+// wrapped into the row by mistake of the stylesheet.
+fn table_cells(r &Box) []&Box {
+	mut out := []&Box{}
+	for c in r.children {
+		if c.style.display == .table_row {
+			for cc in c.children {
+				out << cc
+			}
+			continue
+		}
+		if c.style.display == .table_caption || c.style.display == .table_column
+			|| c.style.display == .table_column_group {
+			continue
+		}
+		out << c
+	}
+	return out
+}
+
+// layout_table lays out a table's rows and cells and returns the height they used.
+//
+// Two passes, which is CSS 2.1 17.5.2's automatic table layout and the reason
+// `min_content_width`/`max_content_width` were built in Phase 2:
+//
+//  1. every cell is laid out once at the width the line has, because a cell's
+//     min-content and max-content do not exist until the cell has been laid out;
+//  2. the columns are sized from those numbers, reduced if their total would overflow
+//     the table, and every cell is laid out again at the width its column came out as.
+//
+// The second pass is the relayout protocol of ARCHITECTURE.md section 5 applied to a
+// whole grid: the first pass's geometry is an assumption, the column width is the fact
+// that replaces it, and `place` assigning rather than accumulating is what makes the
+// re-layout a replacement instead of an adjustment.
+fn (mut l Layouter) layout_table(mut b &Box, ctx &style.Context, content_x int, content_y int, content_width int, cb ContBlock) int {
+	mut rows := table_rows(b)
+	// A caption is a direct child of the table and is not a row, so it is laid out here
+	// rather than by the table's rows. CSS renders it above the table by default.
+	//
+	// Indexed rather than ranged, for the reason the child loop in `place` is: a ranged
+	// loop variable is immutable, and V notices the mutable reference taken through it.
+	mut top := content_y
+	mut cap_i := 0
+	for cap_i < b.children.len {
+		mut c := b.children[cap_i]
+		cap_i++
+		if c.style.display != .table_caption {
+			continue
+		}
+		mut cf := []&Box{}
+		cctx := l.context(c.font_size)
+		ce := edges_of(c.style.margin, &cctx, f64(content_width))
+		top += ce.top
+		top += l.place(mut c, content_width, content_x, top, false, cb, mut cf)
+		top += ce.bottom
+	}
+	if rows.len == 0 {
+		return top - content_y
+	}
+	mut cols := 0
+	for r in rows {
+		mut cells := table_cells(r)
+		if cells.len > cols {
+			cols = cells.len
+		}
+	}
+	if cols == 0 {
+		return top - content_y
+	}
+	// A cell is laid out inside the table's content box, and with its own float list:
+	// a float inside a cell does not reach the rows of the table any more than a float
+	// inside an inline-block reaches the paragraph around it.
+	mut cell_cb := cb
+	cell_cb.y = top
+	cell_cb.x = content_x
+	cell_cb.width = content_width
+	// Pass 1: measure every cell, and keep the tallest cell of each row.
+	mut minc := []int{len: cols, init: 0}
+	mut maxc := []int{len: cols, init: 0}
+	mut row_h := []int{len: rows.len, init: 0}
+	for ri in 0 .. rows.len {
+		mut cells := table_cells(rows[ri])
+		for ci in 0 .. cols {
+			if ci >= cells.len {
+				continue
+			}
+			mut cell := cells[ci]
+			cctx := l.context(cell.font_size)
+			ce := edges_of(cell.style.margin, &cctx, f64(content_width))
+			mut cf := []&Box{}
+			l.place(mut cell, content_width, content_x, content_y, false, cell_cb, mut cf)
+			w := cell.max_content_width + ce.left + ce.right
+			if w > maxc[ci] {
+				maxc[ci] = w
+			}
+			n := cell.min_content_width + ce.left + ce.right
+			if n > minc[ci] {
+				minc[ci] = n
+			}
+			h := cell.rect.height + ce.top + ce.bottom
+			if h > row_h[ri] {
+				row_h[ri] = h
+			}
+		}
+	}
+	// The table's own intrinsic widths are the columns' sums, which is the second
+	// reason Phase 2 measures them: a table inside a shrink-to-fit context is sized by
+	// its columns, not by its widest child.
+	b.max_content_width = 0
+	b.min_content_width = 0
+	for ci in 0 .. cols {
+		b.max_content_width += maxc[ci]
+		b.min_content_width += minc[ci]
+	}
+	// Pass 2: size the columns against what the line has, then place every cell.
+	//
+	// The table's own width joins the sizing here, because a column grid that ignores
+	// `width: 100%` leaves the right part of the table blank while its border still runs
+	// to the full width -- which is what every stylesheet that sets a table width asks
+	// for and not what it gets.
+	mut widths := column_widths(minc, maxc, content_width, wanted_width(b.style, ctx, content_width))
+	mut y := top
+	for ri in 0 .. rows.len {
+		mut cells := table_cells(rows[ri])
+		mut x := content_x
+		// The row's height is measured *after* its cells are laid out at the widths their
+		// columns came out as, and not from pass 1. A cell placed at a column narrower
+		// than the line wraps its text to more lines and grows, so the height pass 1 read
+		// at the full line width was too small -- and the row after it then overlapped
+		// it, which is what a table whose next block sits on top of its last row looks
+		// like when it goes wrong.
+		mut rh := 0
+		for ci in 0 .. cells.len {
+			if ci >= cols {
+				continue
+			}
+			mut cell := cells[ci]
+			cctx := l.context(cell.font_size)
+			ce := edges_of(cell.style.margin, &cctx, f64(content_width))
+			cx := x + ce.left
+			cy := y + ce.top
+			mut cf := []&Box{}
+			l.place(mut cell, widths[ci], cx, cy, false, cell_cb, mut cf)
+			h := cell.rect.height + ce.top + ce.bottom
+			if h > rh {
+				rh = h
+			}
+			x += widths[ci] + ce.left + ce.right
+		}
+		// A cell's height is the row's, not its own content's, so a short cell in a tall
+		// row still paints its background down the whole row.
+		for ci in 0 .. cells.len {
+			if ci >= cols {
+				continue
+			}
+			mut cell := cells[ci]
+			cctx := l.context(cell.font_size)
+			ce := edges_of(cell.style.margin, &cctx, f64(content_width))
+			tall := rh - ce.top - ce.bottom
+			if cell.rect.height < tall {
+				cell.rect.height = tall
+			}
+		}
+		y += rh
+	}
+	return y - content_y
+}
+
+// wanted_width is the width the table's own `width` asked for, capped at what the line
+// has, or 0 when it asked for `auto` -- which is "the columns' content", not a width.
+fn wanted_width(s style.Style, ctx &style.Context, available int) int {
+	if s.width.unit == .auto || s.width.unit == .none {
+		return 0
+	}
+	w := px(resolve(s.width, ctx, f64(available)))
+	if w > available {
+		return available
+	}
+	if w < 0 {
+		return 0
+	}
+	return w
+}
+
+// column_widths is CSS 2.1 17.5.2's second pass for this engine.
+//
+// CSS 2.1 leaves the distribution of a table's width among its columns to the
+// implementation, so this engine's rule is written down rather than borrowed:
+//
+//   - the columns take their max-content while that fits the width available;
+//   - a table that asked for a width of its own (`width: 100%`, or a length) gets it:
+//     the surplus over the columns' content is shared out in proportion to their
+//     max-content, which is what makes a full-width table fill the page instead of
+//     running its border past a blank strip on the right;
+//   - when the content does not fit, the space comes off the columns that *have* slack
+//     -- the difference between their max-content and their min-content -- before it
+//     comes off the min-content itself, because a column narrower than its narrowest
+//     word breaks that word out of its cell;
+//   - and a column reduced to its min-content is reduced further rather than letting
+//     the table overflow its containing block, because a table wider than its parent
+//     is exactly the failure the Phase 3 gate exists to catch.
+//
+// The loop is bounded by the slack rather than by a counter: it stops when no column
+// has any left, which is what makes it terminate for any input.
+fn column_widths(minc []int, maxc []int, available int, wanted int) []int {
+	mut w := maxc.clone()
+	mut have := 0
+	for x in w {
+		have += x
+	}
+	// Surplus: the table asked for a width wider than its columns' content, so the
+	// extra is shared out rather than left blank.
+	if wanted > have {
+		mut extra := wanted - have
+		for extra > 0 {
+			mut before := 0
+			for x in w {
+				before += x
+			}
+			for i in 0 .. w.len {
+				mut take := w[i] * extra / max_of(have, 1)
+				if take > extra {
+					take = extra
+				}
+				w[i] += take
+				extra -= take
+			}
+			// Rounding gave nothing out this round, so give the last pixels to the
+			// widest column: progress beats symmetry for the last few.
+			mut after := 0
+			for x in w {
+				after += x
+			}
+			if after == before {
+				mut widest := 0
+				for i in 0 .. w.len {
+					if w[i] > w[widest] {
+						widest = i
+					}
+				}
+				w[widest] += extra
+				extra = 0
+			}
+		}
+		return w
+	}
+	mut need := have - available
+	if need <= 0 {
+		return w
+	}
+	for need > 0 {
+		mut slack := 0
+		for i in 0 .. w.len {
+			if w[i] > minc[i] {
+				slack += w[i] - minc[i]
+			}
+		}
+		if slack == 0 {
+			break
+		}
+		mut before := 0
+		for x in w {
+			before += x
+		}
+		for i in 0 .. w.len {
+			if w[i] <= minc[i] {
+				continue
+			}
+			d := w[i] - minc[i]
+			mut take := d * need / slack
+			if take > d {
+				take = d
+			}
+			// A column with all the slack still has to give some of it up, or the loop
+			// spins on a rounding that takes nothing.
+			if take < d && d * need > slack * d {
+				take = d
+			}
+			w[i] -= take
+		}
+		mut after := 0
+		for x in w {
+			after += x
+		}
+		if after >= before {
+			// Rounding took nothing this round, so take whatever is still needed from
+			// the widest column: progress beats symmetry for the last pixel.
+			mut widest := 0
+			for i in 0 .. w.len {
+				if w[i] > w[widest] {
+					widest = i
+				}
+			}
+			if w[widest] > 0 {
+				take := if need > w[widest] { w[widest] } else { need }
+				w[widest] -= take
+			}
+		}
+	}
+	return w
 }
 
 // place_root lays out a box that starts a block formatting context of its own, which

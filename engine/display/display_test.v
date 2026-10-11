@@ -2259,3 +2259,247 @@ fn test_an_absolute_box_of_a_static_ancestor_still_finds_the_positioned_one() {
 	assert box_for(root, 'o').rect.x == 4
 	assert box_for(root, 'o').rect.y == 3
 }
+
+// --- display: table -----------------------------------------------------------
+
+// table_page builds body > table#t > tr#r1 > td#c1, td#c2 with the words given, laid
+// out at 800. The `tr` is a direct child of the table on purpose: that is the form
+// real pages write, and it is the form CSS 2.1 17.2.1 requires to be wrapped.
+fn table_page(sheet string, first string, second string) &Box {
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut c1 := el('td', 'c1', '')
+	mut c2 := el('td', 'c2', '')
+	attach(mut c1, text_el(first))
+	attach(mut c2, text_el(second))
+	attach(mut tr, c1, c2)
+	attach(mut table, tr)
+	attach(mut body, table)
+	return layouter(sheet, 800).layout(body)
+}
+
+fn test_a_table_that_is_narrower_than_the_line_does_not_overlap_what_follows_it() {
+	// The row heights are read *after* the cells are laid out at the widths their
+	// columns came out as, and not from the measuring pass: a cell placed at a column
+	// narrower than the line wraps its text to more lines and grows. Reading the height
+	// first is why a table's next block used to sit on top of its last row.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut c1 := el('td', 'c1', '')
+	mut c2 := el('td', 'c2', '')
+	mut after := el('div', 'after', '')
+	attach(mut c1, text_el('a very long description that will not fit in a narrow column at all'))
+	attach(mut c2, text_el('bb'))
+	attach(mut tr, c1, c2)
+	attach(mut table, tr)
+	attach(mut after, text_el('after'))
+	attach(mut body, table, after)
+	root := layouter('', 200).layout(body)
+	t := box_for(root, 't')
+	a := box_for(root, 'after')
+	// The block after the table starts below the table's bottom edge.
+	assert a.rect.y >= t.rect.y + t.rect.height
+	// And the table is as tall as the wrapped cell needed, not as tall as it was when it
+	// was measured across the full line.
+	cell := box_for(root, 'c1')
+	assert cell.rect.height > a.rect.y - t.rect.y - 40
+}
+
+fn test_a_table_that_asks_for_a_width_fills_it() {
+	// `width: 100%` is what most stylesheets give a table, and a grid that ignores it
+	// runs the border to the full width while the columns stop short of it -- a blank
+	// strip on the right with a border through the middle of it.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut c1 := el('td', 'c1', '')
+	mut c2 := el('td', 'c2', '')
+	attach(mut c1, text_el('aa'))
+	attach(mut c2, text_el('bb'))
+	attach(mut tr, c1, c2)
+	attach(mut table, tr)
+	attach(mut body, table)
+	root := layouter('table { width: 100% }', 400).layout(body)
+	t := box_for(root, 't')
+	one := box_for(root, 'c1')
+	two := box_for(root, 'c2')
+	assert t.content.width == 400
+	// The first column is *wider than its content*: the surplus over what the cells needed
+	// was shared out, which is what makes a full-width table fill the page instead of
+	// stopping where the content did.
+	assert one.rect.width > one.max_content_width
+	assert two.rect.x == one.rect.width
+	assert one.rect.width + two.rect.width >= 400
+}
+
+fn test_a_rows_inside_a_tbody_are_kept_as_rows() {
+	// The form every real page writes: `<table><thead><tr>…<tbody><tr>…`. The row groups
+	// are already there, so nothing needs wrapping *except* the rows' own children, and
+	// wrapping a row into anything else leaves the table with no rows at all -- which
+	// renders as a table-sized blank and was caught by rendering a page, not by the
+	// bare-row test above.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut head := el('thead', 'h', '')
+	mut hrow := el('tr', 'hr', '')
+	mut hc := el('th', 'hc', '')
+	mut tbody := el('tbody', 'b', '')
+	mut brow := el('tr', 'br', '')
+	mut bc := el('td', 'bc', '')
+	attach(mut hc, text_el('name'))
+	attach(mut hrow, hc)
+	attach(mut head, hrow)
+	attach(mut bc, text_el('aa'))
+	attach(mut brow, bc)
+	attach(mut tbody, brow)
+	attach(mut table, head, tbody)
+	attach(mut body, table)
+	root := layouter('', 800).layout(body)
+	t := box_for(root, 't')
+	assert t.children.len == 2
+	assert t.children[0].style.display == style.Display.table_header_group
+	assert t.children[1].style.display == style.Display.table_row_group
+	hr := t.children[0].children[0]
+	br := t.children[1].children[0]
+	assert hr.style.display == style.Display.table_row
+	assert br.style.display == style.Display.table_row
+	assert hr.children.len == 1
+	assert hr.children[0].style.display == style.Display.table_cell
+	assert br.children[0].style.display == style.Display.table_cell
+	// And the rows are laid out one under the other, not stacked inside one cell.
+	assert box_for(root, 'bc').rect.y > box_for(root, 'hc').rect.y
+}
+
+fn test_a_bare_row_under_a_table_is_wrapped_in_an_anonymous_row_group() {
+	// Without the wrapper the row is laid out by block layout, which is how a table
+	// becomes two empty divs: the cells would be positioned by the row's own block
+	// path rather than by the column grid, and the table would have no columns at all.
+	root := table_page('', 'aa', 'bbbb')
+	t := box_for(root, 't')
+	assert t.children.len == 1
+	group := t.children[0]
+	assert group.style.display == style.Display.table_row_group
+	assert group.is_anonymous
+	assert group.children.len == 1
+	assert group.children[0].style.display == style.Display.table_row
+	assert group.children[0].children.len == 2
+	assert group.children[0].children[0].style.display == style.Display.table_cell
+}
+
+fn test_columns_take_their_cells_max_content() {
+	// The widths are a relationship rather than a pixel constant, because the numbers
+	// come from the font on this machine and a layout test must not be a font test.
+	root := table_page('', 'aa', 'bbbbbbbbbb')
+	c1 := box_for(root, 'c1')
+	c2 := box_for(root, 'c2')
+	assert c2.rect.width > c1.rect.width
+	// Each column is its own cell's max-content, which is what "the table is as wide as
+	// its content" means.
+	assert c1.rect.width == c1.max_content_width
+	assert c2.rect.width == c2.max_content_width
+}
+
+fn test_a_table_wider_than_its_line_is_reduced_to_fit() {
+	// The Phase 3 gate is "no horizontal overflow", and this is the case that breaks it:
+	// a table whose columns' content is wider than the viewport must come down to the
+	// width available rather than run off the page.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut c1 := el('td', 'c1', '')
+	mut c2 := el('td', 'c2', '')
+	attach(mut c1, text_el('aaaaaaaaaaaaaa'))
+	attach(mut c2, text_el('bbbbbbbbbbbbbb'))
+	attach(mut tr, c1, c2)
+	attach(mut table, tr)
+	attach(mut body, table)
+	root := layouter('', 200).layout(body)
+	t := box_for(root, 't')
+	assert t.content.width <= 200
+	// Every column starts inside the table's own width: with two columns the second one
+	// begins after the first, and neither can be pushed past the right edge by the
+	// reduction -- which is what a table running off the page looks like.
+	first := box_for(root, 'c1')
+	second := box_for(root, 'c2')
+	assert first.rect.x >= t.content.x
+	assert second.rect.x >= t.content.x
+	assert second.rect.x > first.rect.x
+}
+
+fn test_a_row_is_as_tall_as_its_tallest_cell() {
+	// A short cell next to a tall one still takes the row's height, so its background
+	// and border run the full row rather than stopping at its own text.
+	root := table_page('td { height: 60px }', 'aa', 'bb')
+	c1 := box_for(root, 'c1')
+	c2 := box_for(root, 'c2')
+	assert c1.rect.height >= 60
+	assert c2.rect.height >= 60
+}
+
+fn test_two_rows_stack() {
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut r1 := el('tr', 'r1', '')
+	mut r2 := el('tr', 'r2', '')
+	mut a := el('td', 'a', '')
+	mut b := el('td', 'b', '')
+	mut c := el('td', 'c', '')
+	mut d := el('td', 'd', '')
+	attach(mut a, text_el('aa'))
+	attach(mut b, text_el('bb'))
+	attach(mut c, text_el('cc'))
+	attach(mut d, text_el('dd'))
+	attach(mut r1, a, b)
+	attach(mut r2, c, d)
+	attach(mut table, r1, r2)
+	attach(mut body, table)
+	root := layouter('', 800).layout(body)
+	top := box_for(root, 'a').rect.y
+	bottom := box_for(root, 'c').rect.y
+	assert bottom > top
+	// The second row starts where the first one ends, so the table is as tall as both.
+	assert bottom - top == box_for(root, 'a').rect.height
+}
+
+fn test_stray_text_inside_a_table_is_wrapped_in_a_cell() {
+	// Illegal in CSS and common in the wild. Wrapping it means it is laid out inside
+	// the table; leaving it as a direct child would lay it out by block layout and put
+	// it between the rows.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut c1 := el('td', 'c1', '')
+	attach(mut c1, text_el('aa'))
+	attach(mut tr, c1)
+	attach(mut table, tr, text_el('stray'))
+	attach(mut body, table)
+	root := layouter('', 800).layout(body)
+	t := box_for(root, 't')
+	// One row group holding the row, and a second anonymous one holding the stray text.
+	assert t.children.len == 2
+	assert t.children[1].style.display == style.Display.table_row_group
+	cell := t.children[1].children[0].children[0]
+	assert cell.style.display == style.Display.table_cell
+	assert cell.is_anonymous
+}
+
+fn test_a_table_does_not_upset_the_boxes_around_it() {
+	// The regression guard for the hook in `place`: a table is a block, so the block
+	// after it starts below the table and not on top of it.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut c1 := el('td', 'c1', '')
+	mut after := el('div', 'after', '')
+	attach(mut c1, text_el('aa'))
+	attach(mut tr, c1)
+	attach(mut table, tr)
+	attach(mut after, text_el('after'))
+	attach(mut body, table, after)
+	root := layouter('', 800).layout(body)
+	t := box_for(root, 't')
+	a := box_for(root, 'after')
+	assert a.rect.y >= t.rect.y + t.rect.height
+}

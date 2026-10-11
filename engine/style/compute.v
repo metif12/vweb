@@ -51,6 +51,19 @@ fn parse_display(text string) ?Display {
 		// stylesheet written for them lays out as something reasonable instead of
 		// dropping the rule and leaving the element unstyled.
 		'flex', 'inline-flex', 'grid', 'inline-grid' { Display.block }
+		// CSS 2.1 section 17. A stylesheet that lays out a page with tables must not
+		// have every rule dropped: without these the whole table renders as a stack of
+		// unstyled blocks, which is the most common way a real page falls apart.
+		'table' { Display.table }
+		'inline-table' { Display.inline_table }
+		'table-row-group' { Display.table_row_group }
+		'table-header-group' { Display.table_header_group }
+		'table-footer-group' { Display.table_footer_group }
+		'table-row' { Display.table_row }
+		'table-column-group' { Display.table_column_group }
+		'table-column' { Display.table_column }
+		'table-cell' { Display.table_cell }
+		'table-caption' { Display.table_caption }
 		else { return none }
 	}
 }
