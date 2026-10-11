@@ -134,6 +134,20 @@ pub enum Display {
 	// flow_root contains floats, which is Phase 3. It is accepted so a stylesheet
 	// that uses it parses and lays out as a block, rather than dropping the rule.
 	flow_root
+	// The table display types of CSS 2.1 section 17. Only `table` and the internal
+	// types are laid out as a table here; `inline_table` is treated as a block-level
+	// table, which is wrong in the one case where it sits inside a line and is
+	// recorded in PHASES.md rather than left to be discovered on a page.
+	table
+	inline_table
+	table_row_group
+	table_header_group
+	table_footer_group
+	table_row
+	table_column_group
+	table_column
+	table_cell
+	table_caption
 }
 
 pub enum FontWeight {
@@ -432,4 +446,30 @@ pub fn (d Display) is_inline() bool {
 		.inline { true }
 		else { false }
 	}
+}
+
+// is_table reports whether this display value establishes a table, which is the one
+// kind of box whose children are not laid out by block layout at all.
+pub fn (d Display) is_table() bool {
+	return d == .table || d == .inline_table
+}
+
+// is_table_internal reports whether this display value exists only inside a table: a
+// row group, a row, a column group or a column. CSS 2.1 17.2.1 calls them internal
+// table elements, and the distinction matters because they are boxes that block
+// layout must not try to place.
+pub fn (d Display) is_table_internal() bool {
+	return d == .table_row_group || d == .table_header_group || d == .table_footer_group
+		|| d == .table_row || d == .table_column_group || d == .table_column
+}
+
+// is_table_row_group reports whether this display value directly contains rows.
+pub fn (d Display) is_table_row_group() bool {
+	return d == .table_row_group || d == .table_header_group || d == .table_footer_group
+}
+
+// is_table_cell reports whether this display value is a cell, the one internal table
+// element that contains ordinary flow content.
+pub fn (d Display) is_table_cell() bool {
+	return d == .table_cell
 }

@@ -15,14 +15,31 @@ module css
 // properties that appear are the ones engine/style computes values for, so
 // nothing here is a promise about behaviour that does not exist yet.
 
+// The table display types of CSS 2.1 section 17. They are listed here rather than left
+// to the initial value because a `<tbody>` with `display: none` drops every row in it,
+// which is what this sheet used to do: the table parts were blocks and the containers
+// were none, and a table rendered as a stack of stray cells. `col` and `colgroup` accept
+// their own display values but generate no box this engine lays out -- the column widths
+// come from the cells, which is where CSS 2.1's own table puts them when a stylesheet
+// has no `<col>` elements.
+
 pub const user_agent_css = 'html, body, div, p, h1, h2, h3, h4, h5, h6, section, article,\n' +
 	'header, footer, nav, aside, main, figure, figcaption, blockquote, pre, hr, form,\n' +
-	'fieldset, address, dl, dt, dd, ol, ul, li, table, caption, details, summary,\n' +
+	'fieldset, address, dl, dt, dd, ol, ul, li, details, summary,\n' +
 	'noscript, legend {\n' +
 	'  display: block;\n' +
 	'}\n' +
+	'table { display: table; border-spacing: 2px; }\n' +
+	'thead { display: table-header-group; }\n' +
+	'tbody { display: table-row-group; }\n' +
+	'tfoot { display: table-footer-group; }\n' +
+	'tr { display: table-row; }\n' +
+	'th, td { display: table-cell; }\n' +
+	'caption { display: table-caption; }\n' +
+	'colgroup { display: table-column-group; }\n' +
+	'col { display: table-column; }\n' +
 	'head, link, meta, script, style, title, base, param, area, track, source,\n' +
-	'datalist, template, col, colgroup, tbody, tfoot, thead {\n' +
+	'datalist, template {\n' +
 	'  display: none;\n' +
 	'}\n' +
 	'body { margin: 8px; }\n' +
@@ -53,9 +70,6 @@ pub const user_agent_css = 'html, body, div, p, h1, h2, h3, h4, h5, h6, section,
 	'sup { font-size: 0.83em; vertical-align: super; }\n' +
 	'a { color: #0000ee; text-decoration: underline; }\n' +
 	'center { display: block; text-align: center; }\n' +
-	'table { border-spacing: 2px; }\n' +
-	'thead, tbody, tfoot, tr, th, td { display: block; }\n' +
-	'caption { display: block; text-align: center; }\n' +
 	'legend { padding: 0 2px; }\n' +
 	'fieldset { margin: 0 2px; padding: 0.35em 0.75em 0.625em; border: 2px groove; }\n' +
 	'button, input, select, textarea { font-size: 0.83em; }\n' +

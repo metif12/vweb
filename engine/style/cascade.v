@@ -305,6 +305,14 @@ fn split_supports_at(s string, op string) ?[2]string {
 fn supports_display(value string) bool {
 	match value.to_lower() {
 		'block', 'inline', 'none', 'list-item', 'inline-block', 'flow-root' { return true }
+		// A page laid out with tables is the most common shape on the web, and
+		// `@supports (display: table-cell)` is how a stylesheet asks whether it can use
+		// one. Answering false would fall back for every real page.
+		'table', 'inline-table', 'table-row-group', 'table-header-group', 'table-footer-group',
+		'table-row', 'table-column-group', 'table-column', 'table-cell',
+		'table-caption' {
+			return true
+		}
 		else { return false }
 	}
 }
