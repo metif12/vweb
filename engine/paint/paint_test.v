@@ -522,6 +522,61 @@ fn test_a_hidden_box_and_its_children_draw_nothing() {
 	assert l.len() == 0
 }
 
+fn test_visibility_hidden_keeps_the_box_its_space_in_layout() {
+	// The whole difference between `visibility: hidden` and `display: none`: the box
+	// paints nothing and still occupies the place it would have taken, so the
+	// sibling after it is laid out below it rather than in its place.
+	mut root, mut body := page()
+	mut gone := el('div', 'gone')
+	mut kept := el('div', 'kept')
+	attach(mut body, gone, kept)
+	l := list_of(root, 'div { background-color: red; height: 30px } #gone { visibility: hidden }', 800)
+	assert l.count(.fill_rect) == 1
+	assert l.commands[0].rect.y == 30
+}
+
+fn test_a_visible_descendant_of_a_hidden_box_is_painted() {
+	// `visibility` is inherited, and the one override CSS defines is back to
+	// `visible`: a descendant that says so is painted even though its ancestor is
+	// hidden. Without that, `visibility: hidden` would be `display: none` for the
+	// whole subtree, and the two properties would not earn their separate keywords.
+	mut root, mut body := page()
+	mut gone := el('div', 'gone')
+	mut shown := el('div', 'shown')
+	attach(mut shown, text_el('still here'))
+	attach(mut gone, shown)
+	attach(mut body, gone)
+	l := list_of(root, '#gone { visibility: hidden } #shown { visibility: visible; background-color: red }', 800)
+	assert l.count(.fill_rect) == 1
+	assert l.commands[0].color == raster.red
+	assert l.count(.glyph_run) == 1
+}
+
+fn test_a_hidden_descendant_of_a_visible_box_is_still_hidden() {
+	// The other half of the inheritance: the override is per box, so a hidden box
+	// inside a visible one stays hidden.
+	mut root, mut body := page()
+	mut shown := el('div', 'shown')
+	mut gone := el('div', 'gone')
+	attach(mut gone, text_el('not this'))
+	attach(mut shown, gone)
+	attach(mut body, shown)
+	l := list_of(root, '#shown { visibility: visible } #gone { visibility: hidden }', 800)
+	assert l.count(.glyph_run) == 0
+	assert l.len() == 0
+}
+
+fn test_visibility_collapse_hides_the_same_way_for_now() {
+	// `collapse` on a non-table box is specified as `hidden`, which is what CSS 2.1
+	// says and what this engine does; on a table row or column it means something
+	// else entirely and there are no tables yet. Recorded rather than approximated.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { visibility: collapse; background-color: red }', 800)
+	assert l.count(.fill_rect) == 0
+}
+
 fn test_visibility_hidden_on_one_sibling_leaves_the_other() {
 	mut root, mut body := page()
 	mut gone := el('div', 'gone')
@@ -831,4 +886,462 @@ fn test_painting_text_darkens_pixels() {
 	assert inked > 0
 	// Nothing above the box, which starts at y == 0, and nothing in the second line.
 	assert c.at(100, 40) == raster.white
+}
+
+// --- overflow (CSS 2.1 10.16) -------------------------------------------------
+//
+// Every test in this section composites to pixels rather than counting commands,
+// because clipping is a property of the composite and not of the list: a child's
+// own rectangle is unchanged by its parent's `overflow`, so a command-count
+// assertion would have nothing to say about it. What the list *does* gain is a
+// clip command, and that is asserted once the list has one.
+
+// overflow_canvas builds body > holder > child -- holder 100x40, child 200x80, so
+// the child reaches far outside its parent -- and composites `declaration` onto a
+// cleared 200x300 canvas, which the caller then reads.
+fn overflow_canvas(declaration string) &raster.Canvas {
+	mut root := el('html', '')
+	mut body := el('body', 'body')
+	mut holder := el('div', 'holder')
+	mut child := el('div', 'child')
+	attach(mut holder, child)
+	attach(mut body, holder)
+	attach(mut root, body)
+	mut c := raster.new_canvas(200, 300)
+	c.clear(raster.white)
+	render_page(layout(root, declaration, 200), mut c)
+	return c
+}
+
+fn test_overflow_hidden_confines_a_child_that_would_paint_outside_the_box() {
+	src := '#holder { overflow: hidden; width: 100px; height: 40px } #child { width: 200px; height: 80px; background-color: red }'
+	c := overflow_canvas(src)
+	// Inside the parent's padding box the child is painted as asked.
+	assert c.at(50, 20) == raster.red
+	// Outside it, on both axes: nothing was painted there, and nothing wrapped
+	// around to a negative index either.
+	assert c.at(110, 50) == raster.white
+	assert c.at(50, 50) == raster.white
+}
+
+fn test_a_child_of_a_visible_box_is_not_confined() {
+	// The control for the test above, and the reason `visible` is the initial value
+	// that changes nothing: without this, a clip applied to every box would still
+	// make the first test pass.
+	src := '#holder { overflow: visible; width: 100px; height: 40px } #child { width: 200px; height: 80px; background-color: red }'
+	c := overflow_canvas(src)
+	assert c.at(50, 20) == raster.red
+	assert c.at(110, 50) == raster.red
+}
+
+fn test_overflow_hidden_clips_text_and_not_only_filled_boxes() {
+	// Clipping a glyph run is not the same problem as clipping a rectangle: a run
+	// is composited pixel by pixel through a coverage bitmap, and it has to be
+	// confined by the same clip the fills are.
+	//
+	// Sixty pixels of box width makes the paragraph wrap into four lines of one
+	// `MMMMMMMM` each, and the box is one line tall, so everything below y == 20 is
+	// overflow. `M` rather than a narrower letter because the glyph cache is known
+	// to drop empty bitmaps for narrow stems (notes/JOURNAL.md), and a word that
+	// draws nothing would make this test pass for the wrong reason.
+	ink_outside('#holder { overflow: hidden; width: 60px; height: 20px }', false)
+}
+
+fn test_text_overflowing_a_visible_box_is_drawn_below_it() {
+	// The control again: the same wrapped paragraph with `overflow: visible` paints
+	// the lines that hang out of the box, which is what the lines were measured to
+	// do.
+	ink_outside('#holder { width: 60px; height: 20px }', true)
+}
+
+// ink_outside renders one box one line tall holding four lines of wrapped text,
+// and asserts whether anything is painted below the box's bottom edge.
+fn ink_outside(declaration string, want bool) {
+	mut root := el('html', '')
+	mut body := el('body', 'body')
+	mut holder := el('div', 'holder')
+	attach(mut holder, text_el('MMMMMMMM MMMMMMMM MMMMMMMM MMMMMMMM'))
+	attach(mut body, holder)
+	attach(mut root, body)
+	mut c := raster.new_canvas(200, 120)
+	c.clear(raster.white)
+	render_page(layout(root, declaration, 200), mut c)
+	mut inked := 0
+	mut below := 0
+	mut y := 0
+	for y < 120 {
+		mut x := 0
+		for x < 200 {
+			if c.at(x, y) != raster.white {
+				if y < 20 {
+					inked++
+				} else {
+					below++
+				}
+			}
+			x++
+		}
+		y++
+	}
+	assert inked > 0
+	if want {
+		assert below > 0
+	} else {
+		assert below == 0
+	}
+}
+
+// --- opacity ------------------------------------------------------------------
+
+fn test_opacity_tints_the_whole_subtree_once() {
+	// A translucent parent is a group: its own background *and* everything inside
+	// it are composited together and then blended once. Applying the alpha per
+	// command instead would tint the parent's background and then tint the child
+	// again on top of the already-tinted parent, which is the double multiplication
+	// a group exists to avoid.
+	//
+	// The numbers, with the group, in premultiplied integer arithmetic:
+	//
+	//   the child's blue is opaque in the group, so the group is blended at
+	//   alpha 128 as (0, 0, 128, 128) over white, and source-over adds
+	//   (255 * 127 + 127) / 255 == 127 to every channel:
+	//       r = 0 + 127 = 127,  g = 127,  b = 128 + 127 = 255,  a = 255
+	//
+	//   the parent-only pixel is the group's green, blended the same way:
+	//       r = 127, g = 128 + 127 = 255, b = 127, a = 255
+	//
+	// The naive per-command answer for the child would be (63, 63, 191, 191): blue
+	// at alpha 128 over a green that was itself already at alpha 128. That pixel
+	// is translucent on a page the author asked to be opaque, and it is the
+	// difference this test is checking.
+	mut root, mut body := page()
+	mut parent := el('div', 'parent')
+	mut kid := el('div', 'kid')
+	attach(mut parent, kid)
+	attach(mut body, parent)
+	src := '#parent { opacity: 0.5; width: 100px; height: 40px; background-color: rgb(0, 255, 0) } #kid { width: 100px; height: 20px; background-color: rgb(0, 0, 255) }'
+	mut c := raster.new_canvas(200, 300)
+	c.clear(raster.white)
+	render_page(layout(root, src, 200), mut c)
+	assert c.at(50, 10) == raster.Color{
+		r: 127
+		g: 127
+		b: 255
+		a: 255
+	}
+	assert c.at(50, 30) == raster.Color{
+		r: 127
+		g: 255
+		b: 127
+		a: 255
+	}
+}
+
+fn test_opacity_one_changes_nothing() {
+	// `opacity: 1` is the initial value and must not add a group: an offscreen
+	// buffer per box would be the most expensive way to draw the same bytes.
+	src := '#holder { opacity: 1; width: 100px; height: 40px } #child { width: 200px; height: 80px; background-color: red }'
+	c := overflow_canvas(src)
+	assert c.at(50, 20) == raster.red
+	assert c.at(110, 50) == raster.red
+}
+
+// --- border-radius ------------------------------------------------------------
+
+fn test_a_rounded_corner_is_not_painted_at_the_corner() {
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	mut c := raster.new_canvas(200, 200)
+	c.clear(raster.white)
+	// A 100x100 box with a 20px radius: the corner's ellipse is centred at (20, 20)
+	// and the pixel at (0, 0) is wholly outside it, so the page background shows
+	// through. A square corner would have painted that pixel solid.
+	render_page(layout(root, '#d { width: 100px; height: 100px; background-color: red; border-radius: 20px }',
+		200), mut c)
+	assert c.at(0, 0) == raster.white
+	// The centre of the corner square is inside the ellipse, so it is painted.
+	assert c.at(20, 20) == raster.red
+	// Away from the corners the rectangle is whole.
+	assert c.at(50, 50) == raster.red
+}
+
+fn test_a_rounded_border_does_not_paint_the_corner_either() {
+	// The border has to follow the ellipse rather than be clipped by it: the corner
+	// is outside the outer edge of the border, and the straight part of the top
+	// band still gets its full width.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	mut c := raster.new_canvas(200, 200)
+	c.clear(raster.white)
+	render_page(layout(root, '#d { width: 100px; height: 100px; border: 10px solid blue; border-radius: 20px }',
+		200), mut c)
+	assert c.at(0, 0) == raster.white
+	assert c.at(50, 0) == raster.blue
+	// Inside the padding box there is no background, so the page shows.
+	assert c.at(50, 50) == raster.white
+}
+
+// --- determinism ---------------------------------------------------------------
+
+fn test_a_page_with_every_visual_feature_composites_to_identical_bytes() {
+	// ARCHITECTURE.md 4, applied to the features this phase added: two independent
+	// layouts of the same page must produce the same pixels byte for byte. A clip
+	// stack, a group buffer and an ellipse-tested corner are exactly the places
+	// where a float or an unordered map would show up here, so this is the test
+	// that says none of them did.
+	src := '#card { overflow: hidden; width: 120px; height: 60px; background-color: rgb(0, 128, 0); border: 6px solid rgb(0, 0, 200); border-radius: 14px; opacity: 0.75 } #kid { width: 200px; height: 100px; background-color: rgb(200, 0, 0) } #card2 { width: 80px; height: 40px; border-radius: 20px; background-color: rgb(200, 200, 0) }'
+	mut root := el('html', '')
+	mut body := el('body', 'body')
+	mut card := el('div', 'card')
+	mut kid := el('div', 'kid')
+	mut card2 := el('div', 'card2')
+	attach(mut card, kid)
+	attach(mut body, card, card2)
+	attach(mut root, body)
+	mut c1 := raster.new_canvas(200, 300)
+	mut c2 := raster.new_canvas(200, 300)
+	c1.clear(raster.white)
+	c2.clear(raster.white)
+	render_page(layout(root, src, 200), mut c1)
+	render_page(layout(root, src, 200), mut c2)
+	assert c1.pix == c2.pix
+}
+
+// --- the list the visual properties add ---------------------------------------
+
+// clipped_page builds body > holder > child, where holder is 100x40 of content with
+// 4px borders and 5px padding, so its border box is 118x58 and its padding box is
+// (4, 4, 110, 50). The child is 200x80 and hangs out of both.
+fn clipped_page(declaration string) &DisplayList {
+	mut root := el('html', '')
+	mut body := el('body', 'body')
+	mut holder := el('div', 'holder')
+	mut child := el('div', 'child')
+	attach(mut holder, child)
+	attach(mut body, holder)
+	attach(mut root, body)
+	src := declaration + ' #holder { width: 100px; height: 40px; border-width: 4px; border-style: solid; padding: 5px; background-color: white } #child { width: 200px; height: 80px; background-color: red }'
+	return list_of(root, src, 800)
+}
+
+fn test_overflow_hidden_records_a_clip_round_the_padding_box() {
+	l := clipped_page('#holder { overflow: hidden }')
+	assert l.count(.clip_push) == 1
+	assert l.count(.clip_pop) == 1
+	// The border box is 118 wide -- 100 of content plus 4px border and 5px padding on
+	// each side -- and 40 tall, because an explicit `height` is the border box here
+	// (see the note in engine/display's `place`).
+	assert l.commands[0].kind == .fill_rect
+	assert l.commands[0].rect == display.Rect{ x: 0, y: 0, width: 118, height: 40 }
+	// The clip opens after the box's own background and its four border bands, which
+	// is the order that keeps a wide background from being confined by its own
+	// overflow.
+	assert l.commands[5].kind == .clip_push
+	assert l.commands[5].rect == display.Rect{ x: 4, y: 4, width: 110, height: 32 }
+	// The child's own command keeps the geometry it always had: clipping is the
+	// composite's business, so the list still says where the child is.
+	assert l.commands[6].kind == .fill_rect
+	assert l.commands[6].rect == display.Rect{ x: 9, y: 9, width: 200, height: 80 }
+	assert l.commands[6].color == raster.red
+	assert l.commands[7].kind == .clip_pop
+}
+
+fn test_every_clipping_overflow_value_records_the_same_clip() {
+	for value in ['hidden', 'scroll', 'auto', 'clip'] {
+		l := clipped_page('#holder { overflow: ' + value + ' }')
+		assert l.count(.clip_push) == 1
+		assert l.count(.clip_pop) == 1
+	}
+	// And `visible` records none at all -- the initial value costs two commands less
+	// on every page that never mentions it.
+	v := clipped_page('#holder { overflow: visible }')
+	assert v.count(.clip_push) == 0
+	assert v.count(.clip_pop) == 0
+}
+
+fn test_an_unknown_overflow_value_is_dropped_rather_than_guessed() {
+	// CSS drops an invalid declaration and keeps the initial value. Accepting a typo
+	// as `hidden` would clip a page nobody asked to clip.
+	l := clipped_page('#holder { overflow: hiddenx }')
+	assert l.count(.clip_push) == 0
+}
+
+fn test_a_box_with_no_padding_box_area_records_no_clip() {
+	// A clip with nothing to confine is noise in a golden diff. The box here is 8px
+	// of border all round a 0px content box, so its padding box has no area.
+	mut bpx := [4]int{}
+	bpx[0] = 8
+	bpx[1] = 8
+	bpx[2] = 8
+	bpx[3] = 8
+	mut p := new_painter()
+	mut b := &display.Box{
+		rect:      display.Rect{ x: 0, y: 0, width: 8, height: 8 }
+		border_px: bpx
+		style:     style.Style{ overflow: .hidden }
+	}
+	p.paint(b)
+	assert p.list.count(.clip_push) == 0
+}
+
+fn test_opacity_records_a_group_with_its_alpha() {
+	l := clipped_page('#holder { opacity: 0.5 }')
+	assert l.count(.group_begin) == 1
+	assert l.count(.group_end) == 1
+	// Half of 255, rounded once. `int(0.5 * 255)` would be 127, and a second
+	// rounding anywhere else would be a second opinion about what half means.
+	assert l.commands[0].kind == .group_begin
+	assert l.commands[0].alpha == 128
+	assert l.commands[l.commands.len - 1].kind == .group_end
+}
+
+fn test_nested_opacity_nests_the_groups() {
+	// The buoys stack, and the inner group is blended onto the outer one rather than
+	// straight onto the canvas -- which is what makes a translucent box inside
+	// another translucent box come out as one shade rather than as two.
+	mut root, mut body := page()
+	mut outer := el('div', 'outer')
+	mut inner := el('div', 'inner')
+	attach(mut outer, inner)
+	attach(mut body, outer)
+	src := '#outer { opacity: 0.5 } #inner { opacity: 0.5; background-color: red }'
+	l := list_of(root, src, 800)
+	assert l.count(.group_begin) == 2
+	assert l.count(.group_end) == 2
+	assert l.commands[0].kind == .group_begin
+	// The outer opens first, then the inner, and they close in the reverse order.
+	mut inner_at := 0
+	mut i := 0
+	for c in l.commands {
+		if c.kind == .group_begin {
+			inner_at = i
+		}
+		if c.kind == .group_end {
+			assert i > inner_at
+		}
+		i++
+	}
+	assert inner_at > 0
+}
+
+fn test_opacity_zero_hides_the_subtree_without_a_group() {
+	// A group at alpha zero composites a whole buffer to no effect, so the answer is
+	// given by the walk instead. The box has a background and a child with one, and
+	// neither is recorded.
+	mut root, mut body := page()
+	mut holder := el('div', 'holder')
+	mut child := el('div', 'child')
+	attach(mut holder, child)
+	attach(mut body, holder)
+	l := list_of(root, '#holder { opacity: 0; background-color: white } #child { background-color: red }',
+		800)
+	assert l.count(.group_begin) == 0
+	assert l.count(.fill_rect) == 0
+	assert l.len() == 0
+}
+
+// --- rounded borders in the list -----------------------------------------------
+
+fn test_a_rounded_border_is_four_rounded_bands() {
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { width: 100px; height: 60px; background-color: white; border: 4px solid blue; border-radius: 8px }', 800)
+	// One rounded fill for the background, then four bands -- the same count the
+	// square path produces, because a rounded border is not a different number of
+	// sides, it is a different shape for each of them. The border box is 108x60: 100
+	// and 60 of content plus 4px of border on each side.
+	assert l.count(.rounded_rect) == 1
+	assert l.commands[0].kind == .rounded_rect
+	assert l.commands[0].rect == display.Rect{ x: 0, y: 0, width: 108, height: 60 }
+	assert l.count(.rounded_band) == 4
+	assert l.count(.fill_rect) == 0
+	// The bands share one band geometry, and they differ only by side and colour,
+	// which is what the compositor needs and nothing else.
+	assert l.commands[1].band == l.commands[4].band
+	assert l.commands[1].color == raster.blue
+	for i in 1 .. 5 {
+		assert l.commands[i].color == raster.blue
+	}
+}
+
+fn test_the_inner_radii_are_the_outer_ones_less_the_border() {
+	// The border's inner edge is the same curve pulled in by its own width, so the
+	// inner radius is the outer one less the borders on both sides of that corner
+	// (CSS Backgrounds 3). A different pair of sides is subtracted per corner.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { width: 100px; height: 60px; border: 4px solid blue; border-top-width: 2px; border-left-width: 6px; border-radius: 8px }', 800)
+	assert l.count(.rounded_band) == 4
+	b := l.commands[1].band
+	assert b.outer.tl == raster.Radius{ x: 8, y: 8 }
+	assert b.inner.tl == raster.Radius{ x: 8 - 6, y: 8 - 2 }
+	assert b.inner.tr == raster.Radius{ x: 8 - 4, y: 8 - 2 }
+	assert b.inner.br == raster.Radius{ x: 8 - 4, y: 8 - 4 }
+	assert b.inner.bl == raster.Radius{ x: 8 - 6, y: 8 - 4 }
+}
+
+fn test_a_radius_larger_than_the_box_is_scaled_down_not_ignored() {
+	// CSS Backgrounds 3 5.5: when the two radii on a side overrun that side, every
+	// radius is scaled by the same factor. Without it the corner curve is wider than
+	// the box and covers nothing, which reads as a hole in the middle of the
+	// rectangle.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { width: 40px; height: 60px; background-color: red; border-radius: 30px }', 800)
+	assert l.count(.rounded_rect) == 1
+	// Top and bottom are 30 each against a 40px width, so both are halved.
+	assert l.commands[0].corners.tl.x == 20
+	assert l.commands[0].corners.tr.x == 20
+	// Vertically nothing overruns, so the vertical radii stay as they were.
+	assert l.commands[0].corners.tl.y == 30
+	assert l.commands[0].corners.bl.y == 30
+}
+
+fn test_a_zero_radius_background_is_the_plain_fill_it_was() {
+	// The regression guard for everything above: a page with no `border-radius` has
+	// exactly the list it had before this phase, so every existing assertion about
+	// command counts still counts the same things.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { width: 100px; height: 60px; background-color: white; border: 4px solid blue }', 800)
+	assert l.count(.fill_rect) == 5
+	assert l.count(.rounded_rect) == 0
+	assert l.count(.rounded_band) == 0
+}
+
+fn test_a_clip_inside_an_opacity_group_still_confines() {
+	// Where the two stacks meet, and the case that found the bug they had: a group is
+	// an offscreen canvas the subtree is composited into, so a clip inside it has to
+	// confine that buffer. Narrowing only the destination leaves the group's own
+	// contents unconfined and clips only what is drawn after the group closes --
+	// which is exactly the shape of a translucent scroll container, and it showed as
+	// a child hanging out of a card that clipped.
+	mut root, mut body := page()
+	mut holder := el('div', 'holder')
+	mut child := el('div', 'child')
+	attach(mut holder, child)
+	attach(mut body, holder)
+	src := '#holder { opacity: 0.5; overflow: hidden; width: 100px; height: 40px } #child { width: 200px; height: 80px; background-color: red }'
+	mut c := raster.new_canvas(200, 300)
+	c.clear(raster.white)
+	render_page(layout(root, src, 200), mut c)
+	// Inside: red at half alpha over white. Premultiplied source-over can only add,
+	// and white is already 255 red, so red saturates at 128 + 127 and green and blue
+	// -- the channels white had and red did not -- are what the half alpha halves.
+	assert c.at(50, 20) == raster.Color{
+		r: 255
+		g: 127
+		b: 127
+		a: 255
+	}
+	// Outside the padding box on both axes: white, because the child is confined by
+	// the clip *inside* the group and not by anything outside it.
+	assert c.at(110, 50) == raster.white
+	assert c.at(50, 50) == raster.white
 }

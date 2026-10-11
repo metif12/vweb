@@ -930,3 +930,124 @@ fn test_a_persian_stylesheet_computes() {
 	assert s.font_family == 'Vazirmatn'
 	assert s.color == raster.rgb(0x33, 0x33, 0x33)
 }
+
+// --- overflow ----------------------------------------------------------------
+
+fn test_overflow_every_keyword() {
+	e := author_engine('p { overflow: hidden }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.overflow == .hidden
+}
+
+fn test_overflow_is_not_inherited() {
+	// A `overflow: hidden` section would otherwise make every block inside it clip
+	// too, and a page with one scrollable region would render with every paragraph
+	// inside a scroll container.
+	mut parent := initial()
+	parent.overflow = .hidden
+	e := author_engine('')
+	s := style_of(e, el('p', '', ''), parent, default_context())
+	assert s.overflow == .visible
+}
+
+fn test_overflow_defaults_to_visible() {
+	s := initial()
+	assert s.overflow == .visible
+	assert !s.overflow.clips()
+	assert Overflow.hidden.clips()
+	assert Overflow.scroll.clips()
+	assert Overflow.auto.clips()
+	assert Overflow.clip.clips()
+}
+
+fn test_an_unknown_overflow_value_keeps_the_initial_one() {
+	e := author_engine('p { overflow: hiddenx }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.overflow == .visible
+}
+
+// --- border-radius -----------------------------------------------------------
+
+fn test_border_radius_one_length_rounds_all_four_corners() {
+	e := author_engine('p { border-radius: 8px }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.border_radius.x[0].value == 8.0
+	assert s.border_radius.x[1].value == 8.0
+	assert s.border_radius.x[2].value == 8.0
+	assert s.border_radius.x[3].value == 8.0
+	// No `/` means the vertical radii are the horizontal ones, which is what makes a
+	// plain length a circle at each corner rather than nothing at all.
+	for i in 0 .. 4 {
+		assert s.border_radius.y[i] == s.border_radius.x[i]
+	}
+}
+
+fn test_border_radius_two_values_are_top_left_and_top_right() {
+	e := author_engine('p { border-radius: 1px 2px }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.border_radius.x[0].value == 1.0
+	assert s.border_radius.x[1].value == 2.0
+	assert s.border_radius.x[2].value == 1.0
+	assert s.border_radius.x[3].value == 2.0
+}
+
+fn test_border_radius_expands_three_components() {
+	e := author_engine('p { border-radius: 1px 2px 3px }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	// Clockwise from the top-left: the one-value form repeats, the two-value form is
+	// top-left+bottom-right then top-right+bottom-left, and the three-value form is
+	// top-left, top-right+bottom-left, bottom-right.
+	assert s.border_radius.x[0].value == 1.0
+	assert s.border_radius.x[1].value == 2.0
+	assert s.border_radius.x[2].value == 3.0
+	assert s.border_radius.x[3].value == 2.0
+}
+
+fn test_border_radius_with_a_slash_splits_horizontal_from_vertical() {
+	e := author_engine('p { border-radius: 10px / 20px }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.border_radius.x[0].value == 10.0
+	assert s.border_radius.y[0].value == 20.0
+}
+
+fn test_border_radius_percentages_are_kept_unresolved() {
+	// A percentage is of the box's own dimensions, which is a fact about a box. The
+	// cascade cannot know it and does not guess.
+	e := author_engine('p { border-radius: 50% }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.border_radius.x[0].unit == .percent
+	assert s.border_radius.x[0].value == 50.0
+}
+
+fn test_border_radius_is_not_inherited() {
+	mut parent := initial()
+	parent.border_radius.x[0] = Length{ value: 8.0, unit: .px }
+	e := author_engine('')
+	s := style_of(e, el('p', '', ''), parent, default_context())
+	assert s.border_radius.x[0].unit == .none
+}
+
+fn test_border_radius_longhands_name_one_corner_each() {
+	e := author_engine('p { border-top-left-radius: 1px 2px; border-bottom-right-radius: 3px }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	// `border-top-left-radius` must not be read as the *left* side, which is what
+	// `side_index` would answer: a radius written to the wrong corner is a rounded
+	// box that still looks plausible.
+	assert s.border_radius.x[0].value == 1.0
+	assert s.border_radius.y[0].value == 2.0
+	assert s.border_radius.x[2].value == 3.0
+	assert s.border_radius.y[2].value == 3.0
+	assert s.border_radius.x[1].unit == .none
+}
+
+fn test_border_radius_with_too_many_components_is_rejected() {
+	e := author_engine('p { border-radius: 1px 2px 3px 4px 5px }')
+	s := style_of(e, el('p', '', ''), initial(), default_context())
+	assert s.border_radius.x[0].unit == .none
+}
+
+fn test_border_radius_defaults_to_nothing() {
+	s := initial()
+	assert s.border_radius.x[0].unit == .none
+	assert zero_radii().x[3].unit == .none
+}

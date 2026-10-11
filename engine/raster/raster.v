@@ -86,11 +86,23 @@ pub fn (c Color) unpremultiply() [4]u8 {
 
 // Canvas is an RGBA pixel buffer with premultiplied colour and a stride in
 // bytes. Rows are contiguous and top-down.
+//
+// `clip_x` and its three companions are the rectangle every drawing operation is
+// confined to, and they start as the whole canvas. A display list's clip commands
+// narrow and restore them through the compositor, which is why they are on the
+// canvas rather than in the caller: every primitive here already intersected a
+// rectangle with the canvas bounds, so intersecting it with the clip as well is
+// one more bound rather than a second code path, and it applies to a glyph run and
+// a background tile with no change to either.
 pub struct Canvas {
 pub mut:
 	width  int
 	height int
 	pix    []u8
+	clip_x int
+	clip_y int
+	clip_w int
+	clip_h int
 }
 
 pub fn new_canvas(width int, height int) &Canvas {
@@ -100,11 +112,130 @@ pub fn new_canvas(width int, height int) &Canvas {
 		width:  w
 		height: h
 		pix:    []u8{len: w * h * 4}
+		clip_x: 0
+		clip_y: 0
+		clip_w: w
+		clip_h: h
 	}
 }
 
 pub fn (c &Canvas) stride() int {
 	return c.width * 4
+}
+
+// save_clip returns the current clip as four numbers. It is half of a pair with
+// `set_clip`, because a display list's clip commands are a stack and a pop has to
+// restore exactly what the matching push displaced -- which is a fact the canvas
+// holds and a compositor holding its own copy would have to ask for.
+pub fn (c &Canvas) save_clip() (int, int, int, int) {
+	return c.clip_x, c.clip_y, c.clip_w, c.clip_h
+}
+
+// set_clip replaces the clip outright. It is how a pop is restored and how a
+// compositor resets a canvas it was handed after someone else drew on it.
+pub fn (mut c Canvas) set_clip(x int, y int, w int, h int) {
+	c.clip_x = x
+	c.clip_y = y
+	c.clip_w = w
+	c.clip_h = h
+}
+
+// narrow_clip intersects the current clip with (x, y, w, h). The intersection is
+// what nesting means: a box inside a clipped box is confined to both, and the
+// intersection is the only answer that is true for every later primitive without
+// that primitive knowing how deep the nesting goes.
+pub fn (mut c Canvas) narrow_clip(x int, y int, w int, h int) {
+	mut nx := if x > c.clip_x { x } else { c.clip_x }
+	mut ny := if y > c.clip_y { y } else { c.clip_y }
+	mut nx1 := if x + w < c.clip_x + c.clip_w { x + w } else { c.clip_x + c.clip_w }
+	mut ny1 := if y + h < c.clip_y + c.clip_h { y + h } else { c.clip_y + c.clip_h }
+	if nx1 <= nx || ny1 <= ny {
+		nx = 0
+		ny = 0
+		nx1 = 0
+		ny1 = 0
+	}
+	c.clip_x = nx
+	c.clip_y = ny
+	c.clip_w = nx1 - nx
+	c.clip_h = ny1 - ny
+}
+
+// blend_pixel composites one pixel at (x, y), ignoring it outside the canvas or
+// outside the clip. It is the per-pixel form of fill_rect, for a caller that knows
+// the coverage pixel by pixel.
+pub fn (mut c Canvas) blend_pixel(x int, y int, col Color) {
+	if col.a == 0 {
+		return
+	}
+	if x < c.clip_x || y < c.clip_y || x >= c.clip_x + c.clip_w || y >= c.clip_y + c.clip_h {
+		return
+	}
+	if x < 0 || y < 0 || x >= c.width || y >= c.height {
+		return
+	}
+	c.blend_at((y * c.width + x) * 4, col)
+}
+
+// blend_group composites a finished group buffer over the destination at `alpha`.
+//
+// This is the whole of what an opacity group is, and it is one source-over per
+// pixel rather than one per command inside the group. That is the point: a
+// translucent parent's own background and its children are composited against each
+// other first, and the result is blended onto what was behind the parent once.
+// Scaling each command's alpha instead would tint the parent and then tint the
+// child again on top of the already-tinted parent.
+//
+// The buffer is premultiplied like every other source here, so the arithmetic is
+// the same `blend_at` the rest of this module uses, applied to the whole rectangle
+// in one pass. The region is the clip, which is where the buffer can have anything
+// in it: the commands that filled it were clipped to it as they were drawn.
+pub fn (mut c Canvas) blend_group(src &Canvas, alpha int) {
+	if alpha <= 0 || src.width <= 0 || src.height <= 0 {
+		return
+	}
+	cx, cy, cw, ch := c.save_clip()
+	mut yy := cy
+	for yy < cy + ch {
+		mut xx := cx
+		for xx < cx + cw {
+			o := (yy * c.width + xx) * 4
+			a := int(src.pix[o + 3]) * alpha / 255
+			if a == 255 {
+				c.pix[o] = src.pix[o]
+				c.pix[o + 1] = src.pix[o + 1]
+				c.pix[o + 2] = src.pix[o + 2]
+				c.pix[o + 3] = 255
+			} else if a != 0 {
+				c.blend_at(o, scale_alpha(Color{
+					r: src.pix[o]
+					g: src.pix[o + 1]
+					b: src.pix[o + 2]
+					a: src.pix[o + 3]
+				}, a))
+			}
+			xx++
+		}
+		yy++
+	}
+}
+
+// scale_alpha multiplies a colour's alpha by `num/255`, keeping it premultiplied.
+// It is `tint` with the coverage already applied, which is what compositing a
+// whole group at an opacity needs, and it is a separate function because the two
+// divisions round the same way for different reasons: `tint` keeps `r <= a` relative
+// to the glyph coverage, and this keeps it relative to the group alpha.
+fn scale_alpha(col Color, num int) Color {
+	a := int(col.a) * num / 255
+	if a == 0 {
+		return transparent
+	}
+	return Color{
+		r: u8(int(col.r) * a / int(col.a))
+		g: u8(int(col.g) * a / int(col.a))
+		b: u8(int(col.b) * a / int(col.a))
+		a: u8(a)
+	}
 }
 
 // at returns the premultiplied pixel at x, y, or transparent if it is outside
@@ -236,12 +367,18 @@ fn (mut c Canvas) blend_at(o int, src Color) {
 	c.pix[o + 3] = u8(int(src.a) + (int(c.pix[o + 3]) * ia + 127) / 255)
 }
 
-// clip intersects a rectangle with the canvas and returns it as x0, y0, x1, y1
-// half-open bounds. Clipping here rather than at every call site is what keeps
-// the fill loops free of bounds checks.
+// clip intersects a rectangle with the canvas and with the current clip, and
+// returns it as x0, y0, x1, y1 half-open bounds. Clipping here rather than at every
+// call site is what keeps the fill loops free of bounds checks.
 fn (c &Canvas) clip(x int, y int, w int, h int) (int, int, int, int) {
-	x0 := if x < 0 { 0 } else { x }
-	y0 := if y < 0 { 0 } else { y }
+	mut x0 := if x < 0 { 0 } else { x }
+	mut y0 := if y < 0 { 0 } else { y }
+	if x0 < c.clip_x {
+		x0 = c.clip_x
+	}
+	if y0 < c.clip_y {
+		y0 = c.clip_y
+	}
 	mut x1 := x + w
 	mut y1 := y + h
 	if x1 > c.width {
@@ -249,6 +386,12 @@ fn (c &Canvas) clip(x int, y int, w int, h int) (int, int, int, int) {
 	}
 	if y1 > c.height {
 		y1 = c.height
+	}
+	if x1 > c.clip_x + c.clip_w {
+		x1 = c.clip_x + c.clip_w
+	}
+	if y1 > c.clip_y + c.clip_h {
+		y1 = c.clip_y + c.clip_h
 	}
 	if x1 <= x0 || y1 <= y0 {
 		return 0, 0, 0, 0

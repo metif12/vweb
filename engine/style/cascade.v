@@ -317,14 +317,15 @@ const supported_properties = ['background', 'background-color', 'background-imag
 	'border-style', 'border-width', 'border-top', 'border-right', 'border-bottom', 'border-left',
 	'border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color',
 	'border-top-style', 'border-right-style', 'border-bottom-style', 'border-left-style',
-	'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width', 'bottom',
-	'box-sizing', 'clear', 'color', 'display', 'direction', 'float', 'font-family', 'font-size',
-	'font-style', 'font-weight', 'height', 'left', 'line-height', 'list-style-position',
-	'list-style-type', 'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
-	'max-height', 'max-width', 'min-height', 'min-width', 'opacity', 'padding', 'padding-top',
-	'padding-right', 'padding-bottom', 'padding-left', 'position', 'right', 'text-align',
-	'text-decoration', 'text-transform', 'top', 'vertical-align', 'visibility', 'white-space',
-	'width', 'z-index']
+	'border-top-width', 'border-right-width', 'border-bottom-width', 'border-left-width',
+	'border-radius', 'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius',
+	'border-bottom-left-radius', 'bottom', 'box-sizing', 'clear', 'color', 'display', 'direction',
+	'float', 'font-family', 'font-size', 'font-style', 'font-weight', 'height', 'left', 'line-height',
+	'list-style-position', 'list-style-type', 'margin', 'margin-top', 'margin-right', 'margin-bottom',
+	'margin-left', 'max-height', 'max-width', 'min-height', 'min-width', 'opacity', 'overflow',
+	'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'position', 'right',
+	'text-align', 'text-decoration', 'text-transform', 'top', 'vertical-align', 'visibility',
+	'white-space', 'width', 'z-index']
 
 // supports_property reports whether the cascade can act on a property at all.
 pub fn supports_property(name string) bool {
@@ -664,6 +665,18 @@ pub fn (mut s Style) apply(decl Declaration, ctx &Context) {
 		}
 		'opacity' { s.opacity = parse_number(v) or { return } }
 		'visibility' { s.visibility = parse_visibility(v) or { return } }
+		'overflow' { s.overflow = parse_overflow(v) or { return } }
+		'border-radius' {
+			r := parse_radii(v) or { return }
+			s.border_radius = r
+		}
+		'border-top-left-radius', 'border-top-right-radius', 'border-bottom-right-radius',
+		'border-bottom-left-radius' {
+			c := parse_corner(v) or { return }
+			mut i := corner_index(decl.decl.name)
+			s.border_radius.x[i] = c.x
+			s.border_radius.y[i] = c.y
+		}
 		'float' { s.float = parse_float(v) or { return } }
 		'clear' { s.clear = parse_clear(v) or { return } }
 		'position' { s.position = parse_position(v) or { return } }
@@ -757,6 +770,21 @@ fn side_index(name string) int {
 		return 3
 	}
 	return -1
+}
+
+// corner_index names the corner in a `border-<corner>-radius` longhand, in the
+// clockwise-from-top-left order `Radii` uses. It cannot share `side_index`:
+// `border-top-left-radius` ends with `-left`, which that function reads as the
+// *left* side, and a radius written to the wrong corner is a rounded box that
+// looks plausible.
+fn corner_index(name string) int {
+	match name {
+		'border-top-left-radius' { return 0 }
+		'border-top-right-radius' { return 1 }
+		'border-bottom-right-radius' { return 2 }
+		'border-bottom-left-radius' { return 3 }
+		else { return -1 }
+	}
 }
 
 fn set_edge(edges Edges, v string, side int) ?Edges {
