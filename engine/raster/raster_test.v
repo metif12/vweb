@@ -303,3 +303,205 @@ fn test_blend_bitmap_with_zero_size_is_a_no_op() {
 	c.blend_bitmap(0, 0, 2, 0, 2, cov, white)
 	assert c.at(0, 0) == black
 }
+
+// --- rounding -----------------------------------------------------------------
+
+// all_radii gives every corner the same radius, which is what most stylesheets
+// write and what most of these cases want.
+fn all_radii(r int) Corners {
+	return Corners{
+		tl: Radius{ x: r, y: r }
+		tr: Radius{ x: r, y: r }
+		br: Radius{ x: r, y: r }
+		bl: Radius{ x: r, y: r }
+	}
+}
+
+// rounded_band_of is a 20x20 border box with 4px borders and 8px radii, whose
+// padding box is a 12x12 rectangle inset by four. Every rounded-border case below
+// is the same band with a different pixel.
+fn rounded_band_of() Band {
+	return Band{
+		x:       0
+		y:       0
+		w:       20
+		h:       20
+		outer:   all_radii(8)
+		inner:   all_radii(4)
+		inner_x: 4
+		inner_y: 4
+		inner_w: 12
+		inner_h: 12
+		top:     4
+		right:   4
+		bottom:  4
+		left:    4
+	}
+}
+
+fn test_zero_radii_is_a_plain_rectangle() {
+	// `is_zero` is what lets a caller keep its square-corner path unchanged, so the
+	// two have to agree: no radii is exactly a rectangle.
+	assert Corners{}.is_zero()
+	assert !all_radii(1).is_zero()
+	// One corner alone is still a rounded rectangle.
+	mut one := Corners{}
+	one.br.x = 4
+	assert !one.is_zero()
+}
+
+fn test_rounded_covers_leaves_the_corner_outside_the_ellipse() {
+	// A 10x10 rectangle with a 5px radius at every corner, so the top-left corner's
+	// ellipse is centred at (5, 5). The pixel at (0, 0) is outside it at all sixteen
+	// of its samples and is not covered at all; the pixel at (5, 5) is inside at all
+	// sixteen and is wholly covered.
+	c := all_radii(5)
+	assert rounded_covers(0, 0, 10, 10, c, 0, 0) == 0
+	assert rounded_covers(0, 0, 10, 10, c, 2, 2) == 255
+	assert rounded_covers(0, 0, 10, 10, c, 5, 5) == 255
+	// Outside the rectangle entirely.
+	assert rounded_covers(0, 0, 10, 10, c, 10, 10) == 0
+}
+
+fn test_a_corner_pixel_is_partly_covered_where_a_square_corner_is_solid() {
+	// The pixel at (0, 2) of that same rounded rect has exactly five of its sixteen
+	// samples inside the ellipse, so it is covered at 5/16. That fraction is the
+	// whole of the anti-aliasing this module does, and it is in integer arithmetic so
+	// a golden image can compare the byte rather than a tolerance.
+	got := rounded_covers(0, 0, 10, 10, all_radii(5), 0, 2)
+	assert got > 0 && got < 255
+	assert got == u8(5 * 255 / 16)
+}
+
+fn test_fill_rounded_rect_blends_a_corner_pixel_at_its_coverage() {
+	mut c := new_canvas(10, 10)
+	c.clear(white)
+	c.fill_rounded_rect(0, 0, 10, 10, all_radii(5), black)
+	assert c.at(0, 0) == white
+	assert c.at(5, 5) == black
+	// Black at 79/255 over white, in premultiplied source-over: the source is
+	// (0, 0, 0, 79), so every channel gains (255 * 176 + 127) / 255 == 176.
+	assert c.at(0, 2) == Color{
+		r: 176
+		g: 176
+		b: 176
+		a: 255
+	}
+}
+
+fn test_fill_rounded_rect_with_no_radii_is_fill_rect() {
+	mut a := new_canvas(8, 8)
+	mut b := new_canvas(8, 8)
+	a.clear(white)
+	b.clear(white)
+	a.fill_rounded_rect(1, 1, 5, 4, Corners{}, red)
+	b.fill_rect(1, 1, 5, 4, red)
+	assert a.pix == b.pix
+}
+
+fn test_a_rounded_border_band_follows_the_outer_ellipse() {
+	b := rounded_band_of()
+	// The very corner is outside the outer ellipse, so neither side that meets there
+	// covers it.
+	assert band_covers(b, .top, 0, 0) == 0
+	assert band_covers(b, .left, 0, 0) == 0
+	// One row below the top strip, inside the corner square: the diagonal of that
+	// square puts the pixel on the left side rather than the top. The two sides
+	// partition the corner between them, which is what stops a wedge of it going
+	// unpainted.
+	assert band_covers(b, .top, 1, 5) == 0
+	assert band_covers(b, .left, 1, 5) == 255
+	// Along the straight part of the top band, no corner is involved.
+	assert band_covers(b, .top, 10, 0) == 255
+	// Inside the inner rounded rectangle nothing is in the band, whatever side asks.
+	assert band_covers(b, .top, 10, 6) == 0
+	assert band_covers(b, .left, 10, 6) == 0
+}
+
+fn test_fill_band_paints_the_ring_and_not_the_inside() {
+	mut c := new_canvas(20, 20)
+	c.clear(white)
+	c.fill_band(rounded_band_of(), .top, black)
+	assert c.at(0, 0) == white
+	assert c.at(10, 0) == black
+	assert c.at(10, 6) == white
+}
+
+// --- clipping -----------------------------------------------------------------
+
+fn test_narrow_clip_confines_fills_and_restores() {
+	mut c := new_canvas(4, 4)
+	c.clear(white)
+	sx, sy, sw, sh := c.save_clip()
+	c.narrow_clip(1, 1, 2, 2)
+	c.fill_rect(0, 0, 4, 4, black)
+	assert c.at(0, 0) == white
+	assert c.at(1, 1) == black
+	// The far edge of the clip, and nothing wrapped past it.
+	assert c.at(3, 3) == white
+	c.set_clip(sx, sy, sw, sh)
+	c.fill_rect(0, 0, 4, 4, black)
+	assert c.at(0, 0) == black
+}
+
+fn test_a_clip_nested_inside_a_clip_is_the_intersection() {
+	mut c := new_canvas(4, 4)
+	c.clear(white)
+	c.narrow_clip(0, 0, 3, 4)
+	c.narrow_clip(2, 0, 4, 4)
+	c.fill_rect(0, 0, 4, 4, black)
+	// The intersection of [0, 3) with [2, 6) is [2, 3): one column, not two.
+	assert c.at(0, 0) == white
+	assert c.at(1, 0) == white
+	assert c.at(2, 0) == black
+	assert c.at(3, 0) == white
+}
+
+fn test_narrow_clip_to_an_empty_region_paints_nothing() {
+	mut c := new_canvas(4, 4)
+	c.clear(white)
+	c.narrow_clip(10, 10, 2, 2)
+	c.fill_rect(0, 0, 4, 4, black)
+	for y in 0 .. 4 {
+		for x in 0 .. 4 {
+			assert c.at(x, y) == white
+		}
+	}
+}
+
+// --- groups -------------------------------------------------------------------
+
+fn test_blend_group_applies_one_alpha_to_the_whole_buffer() {
+	// The property that makes an opacity group correct: fills inside the group are
+	// composited against each other first, and the group is blended once. Scaling
+	// each fill's alpha instead would composite the second over an already-dimmed
+	// first, which is the double multiplication a group exists to avoid.
+	mut c := new_canvas(2, 1)
+	c.clear(white)
+	mut g := new_canvas(2, 1)
+	g.fill_rect(0, 0, 2, 1, black)
+	// The white fill wins inside the group, so the group holds white on the right.
+	g.fill_rect(1, 0, 1, 1, white)
+	c.blend_group(g, 128)
+	// Black at half alpha over white: (0, 0, 0, 128) adds (255 * 127 + 127) / 255
+	// == 127 to every channel.
+	assert c.at(0, 0) == Color{
+		r: 127
+		g: 127
+		b: 127
+		a: 255
+	}
+	// The group holds white there, and white at half alpha over white is white. A
+	// per-fill alpha would have put white-at-128 over black-at-128, which is a
+	// translucent mid grey -- the answer this test is here to refuse.
+	assert c.at(1, 0) == white
+}
+
+fn test_blend_group_at_zero_alpha_leaves_the_destination_alone() {
+	mut c := new_canvas(1, 1)
+	c.clear(white)
+	mut g := new_canvas(1, 1)
+	g.fill_rect(0, 0, 1, 1, black)
+	c.blend_group(g, 0)
+	assert c.at(0, 0) == white
+}

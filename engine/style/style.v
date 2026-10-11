@@ -49,6 +49,14 @@ pub mut:
 	border_width        Edges
 	border_color        [4]raster.Color
 	border_style        [4]BorderStyle
+	// border_radius is the four corner radii, horizontal and vertical, in CSS's
+	// clockwise order from the top-left. The two arrays are the values before and
+	// after a `/`: `border-radius: 10px / 20px` is a corner 10 wide and 20 tall,
+	// and `border-radius: 50%` is an ellipse rather than a circle.
+	border_radius Radii
+	// overflow is what this box does with descendants that do not fit in it. It is
+	// not inherited, so it stays at its initial value here.
+	overflow Overflow
 	// width and height are `auto` unless the cascade says otherwise. The distinction
 	// is the whole of Phase 2: `auto` for a block means fill the containing block and
 	// `0` means nothing.
@@ -183,6 +191,44 @@ pub enum BorderStyle {
 	outset
 }
 
+// Overflow is what a box does with content that does not fit inside it.
+//
+// The four clipping values are one behaviour at this stage of the engine: a
+// scrollbar, a scrollable overflow region and a hard clip are all distinguished
+// by machinery that does not exist yet, and the half that a rendered page shows
+// is the same for all of them -- content outside the box is not painted.
+pub enum Overflow {
+	visible
+	hidden
+	scroll
+	auto
+	clip
+}
+
+// clips reports whether this value confines descendants to the box's padding box.
+pub fn (o Overflow) clips() bool {
+	return o != .visible
+}
+
+// Radii is `border-radius`: the four corners, each an ellipse.
+//
+// The index order is CSS's own clockwise order from the top-left, and `x` and `y`
+// are the two axes of that corner. Both are Lengths rather than pixels because a
+// percentage of `border-radius` is of the box's own dimensions, which is a fact
+// about a box and so a question for the box to answer.
+pub struct Radii {
+pub mut:
+	x [4]Length
+	y [4]Length
+}
+
+// zero_radii is the initial value: no rounding, which is not the same as a radius
+// of zero length -- a `border-radius: 0` is spelled that way and means the same
+// thing, but the initial value has no length attached to it at all.
+pub fn zero_radii() Radii {
+	return Radii{}
+}
+
 pub enum ListStyleType {
 	none
 	disc
@@ -277,6 +323,8 @@ pub fn initial() Style {
 		border_width:        Edges{}
 		border_color:        [raster.black, raster.black, raster.black, raster.black]
 		border_style:        [.none, .none, .none, .none]
+		border_radius:       zero_radii()
+		overflow:            .visible
 		width:               Length{ unit: .auto }
 		height:              Length{ unit: .auto }
 		min_width:           Length{ unit: .auto }
@@ -333,6 +381,11 @@ pub fn (mut s Style) inherit_from(parent &Style) {
 	s.vertical_align = parent.vertical_align
 	s.text_transform = parent.text_transform
 	s.visibility = parent.visibility
+	// `border-radius` and `overflow` are deliberately not here. CSS gives both
+	// "Inherited: no", and the box-model half of it matters: a rounded, clipping
+	// parent would make every block inside it rounded and clipping too, which is
+	// what a page containing one `overflow: hidden` section would otherwise render
+	// as. They stay at the initial value `initial()` gave them.
 }
 
 // inherited is the property-by-property answer to "what passes down the tree", for

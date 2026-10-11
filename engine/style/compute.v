@@ -221,6 +221,129 @@ fn parse_visibility(text string) ?Visibility {
 	}
 }
 
+// parse_overflow reads CSS 2.1 11.1.
+fn parse_overflow(text string) ?Overflow {
+	return match text.trim_space().to_lower() {
+		'visible' { Overflow.visible }
+		'hidden' { Overflow.hidden }
+		'scroll' { Overflow.scroll }
+		'auto' { Overflow.auto }
+		'clip' { Overflow.clip }
+		else { return none }
+	}
+}
+
+// parse_radii reads the `border-radius` shorthand: one to four lengths for the
+// horizontal radii, and optionally the same for the vertical ones after a `/`.
+//
+// The two-value form abbreviates the four the same way the box-model shorthands
+// do -- clockwise from the top-left -- so it is expanded here rather than in the
+// cascade, where every other four-sided shorthand is. The vertical set defaults
+// to the horizontal one, which is what makes a plain `border-radius: 8px` a circle
+// at each corner rather than nothing at all.
+//
+// A component that is not a length makes the whole declaration invalid, which is
+// what `apply` does with a `none` answer: drops it. A `/` with nothing after it is
+// the same.
+fn parse_radii(text string) ?Radii {
+	mut hx := []string{}
+	mut vy := []string{}
+	mut after_slash := false
+	for p in split_top_level(text.trim_space()) {
+		if p == '/' {
+			if after_slash {
+				// A second slash is not a shape this grammar has.
+				return none
+			}
+			after_slash = true
+			continue
+		}
+		if after_slash {
+			vy << p
+		} else {
+			hx << p
+		}
+	}
+	mut out := Radii{}
+	if !fill_radii(mut out.x, hx) {
+		return none
+	}
+	if vy.len == 0 {
+		out.y = out.x
+		return out
+	}
+	if !fill_radii(mut out.y, vy) {
+		return none
+	}
+	return out
+}
+
+// fill_radii expands one to four components into the four corners, clockwise from
+// the top-left. It answers false when there is nothing to expand or too much, so
+// that a caller can refuse the declaration rather than keeping a half of it.
+fn fill_radii(mut corners [4]Length, parts []string) bool {
+	if parts.len == 0 || parts.len > 4 {
+		return false
+	}
+	mut vals := [Length{}, Length{}, Length{}, Length{}]
+	mut i := 0
+	for p in parts {
+		l := parse_length(p) or { return false }
+		vals[i] = l
+		i++
+	}
+	if i == 1 {
+		vals[1] = vals[0]
+		vals[2] = vals[0]
+		vals[3] = vals[0]
+	} else if i == 2 {
+		vals[2] = vals[0]
+		vals[3] = vals[1]
+	} else if i == 3 {
+		vals[3] = vals[1]
+	}
+	corners[0] = vals[0]
+	corners[1] = vals[1]
+	corners[2] = vals[2]
+	corners[3] = vals[3]
+	return true
+}
+
+// parse_corner reads one `border-<corner>-radius` longhand, whose value is one
+// length or two -- the horizontal radius then the vertical one.
+fn parse_corner(text string) ?Corner {
+	parts := split_top_level(text.trim_space())
+	if parts.len == 0 || parts.len > 2 {
+		return none
+	}
+	mut c := Corner{}
+	if !corner_axis(mut c.x, parts[0]) {
+		return none
+	}
+	if parts.len == 2 {
+		if !corner_axis(mut c.y, parts[1]) {
+			return none
+		}
+		return c
+	}
+	c.y = c.x
+	return c
+}
+
+fn corner_axis(mut l Length, word string) bool {
+	v := parse_length(word) or { return false }
+	l = v
+	return true
+}
+
+// Corner is one corner's two radii, which is what a `border-<corner>-radius`
+// longhand carries before the cascade writes it into a Radii.
+pub struct Corner {
+pub mut:
+	x Length
+	y Length
+}
+
 fn parse_float(text string) ?Float {
 	return match text.trim_space().to_lower() {
 		'left' { Float.left }

@@ -89,6 +89,30 @@ fn describe(cmd paint.Command) string {
 		.fill_rect {
 			return 'fill    ' + rect_str(cmd.rect) + '  ' + cmd.color.str()
 		}
+		.rounded_rect {
+			// The radius at each corner, in CSS's clockwise order from the top-left,
+			// because that is the order a stylesheet writes them in and the order the
+			// geometry is resolved in.
+			return 'round   ' + rect_str(cmd.rect) + '  ' + cmd.color.str() + '  r=' +
+				cmd.corners.tl.str() + ' ' + cmd.corners.tr.str() + ' ' + cmd.corners.br.str() +
+				' ' + cmd.corners.bl.str()
+		}
+		.rounded_band {
+			return side_name(int(cmd.alpha)) + '  ' + rect_str(cmd.rect) + '  ' +
+				cmd.color.str()
+		}
+		.clip_push {
+			return 'clip>   ' + rect_str(cmd.rect)
+		}
+		.clip_pop {
+			return 'clip<'
+		}
+		.group_begin {
+			return 'group>  alpha=' + cmd.alpha.str()
+		}
+		.group_end {
+			return 'group<'
+		}
 		.glyph_run {
 			mut b := strings.new_builder(64)
 			b.write_string('glyphs  ' + cmd.glyphs.len.str() + ' at')
@@ -113,6 +137,20 @@ fn describe(cmd paint.Command) string {
 				cmd.image.bitmap.width.str() + 'x' + cmd.image.bitmap.height.str() + ' ' +
 				cmd.image.repeat.str()
 		}
+	}
+}
+
+// side_name names the border side a rounded band belongs to. The display list keeps
+// the side as the integer the raster enum has, so that the command stays a plain
+// value a golden test can compare; this is the only place it has to be read as a
+// word.
+fn side_name(n int) string {
+	return match n {
+		0 { 'top     ' }
+		1 { 'right   ' }
+		2 { 'bottom  ' }
+		3 { 'left    ' }
+		else { 'side?   ' }
 	}
 }
 

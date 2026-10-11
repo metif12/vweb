@@ -131,10 +131,10 @@ fn (mut c Canvas) blend_image_clipped(x int, y int, dest_w int, dest_h int, cx i
 	}
 }
 
-// clip_rect intersects a rectangle with a clipping rectangle and with the canvas,
-// and returns it as x0, y0, x1, y1 half-open bounds. The result is a subrange of the
-// rectangle on both axes, which is what lets a caller map a destination pixel back
-// onto a source without a bounds check.
+// clip_rect intersects a rectangle with a clipping rectangle, with the canvas and
+// with the current clip, and returns it as x0, y0, x1, y1 half-open bounds. The
+// result is a subrange of the rectangle on both axes, which is what lets a caller
+// map a destination pixel back onto a source without a bounds check.
 fn (c &Canvas) clip_rect(x int, y int, w int, h int, cx int, cy int, cw int, ch int) (int, int, int, int) {
 	mut x0 := if x > cx { x } else { cx }
 	mut y0 := if y > cy { y } else { cy }
@@ -145,6 +145,18 @@ fn (c &Canvas) clip_rect(x int, y int, w int, h int, cx int, cy int, cw int, ch 
 	}
 	if x1 > c.width {
 		x1 = c.width
+	}
+	if x0 < c.clip_x {
+		x0 = c.clip_x
+	}
+	if y0 < c.clip_y {
+		y0 = c.clip_y
+	}
+	if x1 > c.clip_x + c.clip_w {
+		x1 = c.clip_x + c.clip_w
+	}
+	if y1 > c.clip_y + c.clip_h {
+		y1 = c.clip_y + c.clip_h
 	}
 	if x1 <= x0 || y1 <= y0 {
 		return 0, 0, 0, 0
