@@ -1345,3 +1345,102 @@ fn test_a_clip_inside_an_opacity_group_still_confines() {
 	assert c.at(110, 50) == raster.white
 	assert c.at(50, 50) == raster.white
 }
+
+// --- border styles ------------------------------------------------------------
+
+fn test_a_double_border_paints_two_bands_per_side() {
+	// Before this, `double` drew as one solid band: the width was right and the rule
+	// was flat, which is what a border style looks like when the engine knows its
+	// geometry and nothing about its look.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { border: 6px double black; height: 20px }', 800)
+	// Four sides, two bands each, and no background to add a fifth.
+	assert l.count(.fill_rect) == 8
+	// The bands of the top side are the outer third and the inner remainder, with the
+	// gap between them: 2px, 4px, in that order, at the box's top edge.
+	assert l.commands[0].rect == display.Rect{ x: 0, y: 0, width: 800, height: 2 }
+	assert l.commands[1].rect == display.Rect{ x: 0, y: 4, width: 800, height: 2 }
+}
+
+fn test_two_tone_styles_swap_between_the_two_sides() {
+	// `groove` and `ridge` are the same two tones in the opposite order, and that swap
+	// is the entire difference between them -- so a test that only checked "two bands"
+	// would pass for both.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	g := list_of(root, 'div { border: 6px groove black; height: 20px }', 800)
+	r := list_of(root, 'div { border: 6px ridge black; height: 20px }', 800)
+	assert g.count(.fill_rect) == 8
+	assert r.count(.fill_rect) == 8
+	// The outer half of the top side is the dark tone for a groove and the light one
+	// for a ridge.
+	g_top := g.commands[0].color
+	r_top := r.commands[0].color
+	assert g_top != r_top, 'groove and ridge must differ on the same side'
+	// And both tones are shades of the same colour: neither is black itself.
+	assert g_top != raster.black
+	assert r_top != raster.black
+	assert g_top.r <= g_top.a
+}
+
+fn test_inset_and_outset_swap_the_axis() {
+	// The two swap which side of the box is shadowed, not the depth: a top or left side
+	// and a bottom or right side exchange.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	i := list_of(root, 'div { border: 6px inset black; height: 20px }', 800)
+	o := list_of(root, 'div { border: 6px outset black; height: 20px }', 800)
+	assert i.count(.fill_rect) == 8
+	assert o.count(.fill_rect) == 8
+	// The top side is shadowed for an inset and lit for an outset.
+	assert i.commands[0].color != o.commands[0].color
+	// The bottom side is the mirror, so inset's bottom equals outset's top.
+	assert i.commands[4].color == o.commands[0].color
+}
+
+fn test_a_solid_border_is_unchanged() {
+	// The regression guard. The band loop replaces four single fills, so a page with a
+	// solid border must produce exactly the commands it produced before -- the same
+	// count and the same geometry, measured rather than assumed.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { border: 4px solid black; height: 20px }', 800)
+	assert l.count(.fill_rect) == 4
+	assert l.commands[0].rect == display.Rect{ x: 0, y: 0, width: 800, height: 4 }
+	assert l.commands[0].color == raster.black
+	assert l.commands[1].rect == display.Rect{ x: 796, y: 0, width: 4, height: 20 }
+	assert l.commands[2].rect == display.Rect{ x: 0, y: 16, width: 800, height: 4 }
+	assert l.commands[3].rect == display.Rect{ x: 0, y: 0, width: 4, height: 20 }
+}
+
+fn test_a_dashed_border_marks_along_the_side() {
+	// A dashed side is a run of marks, not one band, and the mark scales with the
+	// border width: a 6px dash marks 18px and gaps 12px, so an 800px-long side carries
+	// more than one mark.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { border: 6px dashed black; height: 20px }', 800)
+	assert l.count(.fill_rect) > 8
+	// Each mark on the top side is 18px wide and 6px tall, and the first starts at the
+	// box's own left edge.
+	assert l.commands[0].rect == display.Rect{ x: 0, y: 0, width: 18, height: 6 }
+	assert l.commands[1].rect.x == 30
+}
+
+fn test_a_dotted_border_marks_squares_of_the_border_width() {
+	// A dot is one border-width square with a one-width gap, so a 4px dotted top side
+	// marks and gaps 4px at a time.
+	mut root, mut body := page()
+	mut div := el('div', 'd')
+	attach(mut body, div)
+	l := list_of(root, 'div { border: 4px dotted black; height: 20px }', 800)
+	assert l.count(.fill_rect) > 4
+	assert l.commands[0].rect == display.Rect{ x: 0, y: 0, width: 4, height: 4 }
+	assert l.commands[1].rect.x == 8
+}

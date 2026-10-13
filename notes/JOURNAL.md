@@ -1827,3 +1827,59 @@ wrap نبود).
 قبل از اصلاح ساخته شده بودند و **کهنه** بودند. از آن پس هر render را با یک باینری
 تازه در همان دستور ساختم. اصلاحِ بعدی (سرریز فضای اضافی برای `width: 100%`) با
 `tools/boxes.v` که دوباره ساخته شد سنجیده شد: `table.w (0,58 340x141)`.
+
+---
+
+## 2026-10-13 - Border styles: `double`, `groove`, `ridge`, `inset`, `outset`, `dashed`, `dotted`
+
+**Status:** implemented, committed on branch `phase3-borderstyle`. 6 new tests in
+`engine/paint/paint_test.v` and 3 in `engine/raster/raster_test.v`; all pre-existing
+tests in those two files still green. Control: reverting `paint.v` and `raster.v` to the
+merge base leaves the new tests red (`count(.fill_rect)` 4 where 8 is expected, and 4
+where a dash needs more than one command). A rendered page was inspected pixel by pixel.
+
+**What a side's style becomes.** A side is no longer one `fill_rect`. `side_bands`
+splits it into the runs its style paints: one for `solid`, two with a gap for `double`,
+two of two tones for `groove`/`ridge`/`inset`/`outset`, and a run of marks for
+`dashed`/`dotted`. The rules are this engine's own where CSS 2.1 leaves them open, and
+they are written down rather than borrowed:
+
+- `double` is two bands of a third each with the middle third as the gap. A width under
+  3 degrades to solid, because three stripes do not fit.
+- `groove`/`ridge`/`inset`/`outset` are two bands, the outer half and the inner half.
+  `inset`/`outset` depend on the *side*: top and left shadowed, bottom and right lit.
+  `groove`/`ridge` split it the other way, across the depth, and are each other's
+  mirror.
+- the shades are `shade(col, 128)` and `shade(col, 384)` - half as bright, and half way
+  towards white.
+- a dash is 3 border-widths on and 2 off; a dot is 1 on and 1 off.
+
+**Three bugs, all found by measuring rather than by reading.**
+
+1. **The `double` gap was not a gap.** The first version gave each band only a width, so
+   the two bands were laid contiguously and `double` drew as one solid band with a seam.
+   Measured after the fix: top side at y=0 h=2 and y=4 h=2, with 2..4 empty.
+2. **`shade` could not lighten.** It scaled every channel, and scaling a channel down is
+   all a multiply can do, so `shade(black, 384)` was still black - a `ridge` border with
+   one tone, which is the entire difference between `ridge` and `solid`. Darkening
+   scales, lightening now blends towards white.
+3. **A band's offset was read on the wrong axis.** `double`'s bands stack *across* the
+   border, so their offset advances into it; a dash's marks run *along* the side, so its
+   offset is a position along it. Conflating them drew a `double` inner rule four pixels
+   to the right and dashes marching diagonally down the box. The band now carries the
+   two extents separately (`across` and `length`), and which one is set says which axis
+   the offset is on.
+
+A fourth bug the *pre-existing* tests caught: the plain `solid` path returned a band
+with no colour, and a zero `Color` is transparent, which `fill_rect` skips - so a solid
+border drew nothing. `test_a_solid_border_draws_four_bands_inside_the_box` and
+`test_each_side_keeps_its_own_colour` both went red, which is how it was found.
+
+**Verified on pixels, not on assertions.** A 6px dashed top side draws marks of 18px
+with 12px gaps (`##################............`), and a 4px dotted one draws `####....`
+- the rule, measured. `groove` and `ridge` render as each other's mirror, and `inset` /
+`outset` swap which side of the box is shadowed.
+
+**Not done:** border *styles* on a rounded border still draw one band per side, because
+`rounded_band` takes a single band; and a dashed border's corner behaviour at a rounded
+corner is not defined here.
