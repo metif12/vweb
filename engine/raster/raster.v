@@ -238,6 +238,45 @@ fn scale_alpha(col Color, num int) Color {
 	}
 }
 
+// shade darkens a colour towards black or lightens it towards white, and is what gives
+// `groove`/`ridge`/`inset`/`outset` their two tones.
+//
+// `num` is the scale over 256: 256 is the colour unchanged, 128 is half as bright, and
+// 384 is half way towards white. Darkening scales the channels, because scaling towards
+// zero is what a shadow is. Lightening *blends* towards white rather than scaling up,
+// because scaling a channel down is all a multiply can do and black would stay black --
+// a `border: 6px ridge black` whose light tone was still black would be a border with
+// one tone, and the two tones are the entire difference between `ridge` and `solid`.
+//
+// Every channel including alpha moves by the same operation, which is what keeps the
+// module's `r <= a` invariant holding: tinting only the colour channels would leave an
+// opaque colour brighter than its own alpha. A translucent border therefore shades
+// without its alpha drifting away from its colour.
+pub fn shade(col Color, num int) Color {
+	if num <= 0 {
+		return transparent
+	}
+	if num <= 256 {
+		r := clamp255(int(col.r) * num / 256)
+		g := clamp255(int(col.g) * num / 256)
+		b := clamp255(int(col.b) * num / 256)
+		a := clamp255(int(col.a) * num / 256)
+		if a == 0 {
+			return transparent
+		}
+		return Color{ r: u8(r), g: u8(g), b: u8(b), a: u8(a) }
+	}
+	k := num - 256
+	r := clamp255(int(col.r) + (255 - int(col.r)) * k / 256)
+	g := clamp255(int(col.g) + (255 - int(col.g)) * k / 256)
+	b := clamp255(int(col.b) + (255 - int(col.b)) * k / 256)
+	a := clamp255(int(col.a) + (255 - int(col.a)) * k / 256)
+	if a == 0 {
+		return transparent
+	}
+	return Color{ r: u8(r), g: u8(g), b: u8(b), a: u8(a) }
+}
+
 // at returns the premultiplied pixel at x, y, or transparent if it is outside
 // the canvas. Callers should prefer fill_rect and blend_bitmap; this exists for
 // tests and for the case where a box collapses to a single pixel.

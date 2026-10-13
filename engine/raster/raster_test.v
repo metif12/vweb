@@ -505,3 +505,52 @@ fn test_blend_group_at_zero_alpha_leaves_the_destination_alone() {
 	c.blend_group(g, 0)
 	assert c.at(0, 0) == white
 }
+
+// --- shading, for the two-tone border styles ---------------------------------
+
+fn test_shade_darkens_and_lightens_in_premultiplied_space() {
+	// Darkening scales and lightening blends, and both move every channel together.
+	s := shade(Color{ r: 200, g: 150, b: 100, a: 255 }, 128)
+	// The alpha scales with the colour rather than staying put, which is what keeps the
+	// shaded colour premultiplied: an opaque dark grey is r=g=b=127 at a=127, and
+	// holding the alpha at 255 would leave 128 sitting under a 127 channel.
+	assert s.a == 127
+	assert s.r < 200
+	assert s.g < 150
+	assert s.b < 100
+	// The invariant the module holds everywhere: a shaded colour is still premultiplied.
+	assert s.r <= s.a
+	assert s.g <= s.a
+	assert s.b <= s.a
+
+	l := shade(Color{ r: 200, g: 150, b: 100, a: 255 }, 384)
+	assert l.r > 200
+	assert l.g > 150
+	assert l.b > 100
+	assert l.r <= l.a
+}
+
+fn test_shade_of_an_opaque_black_is_still_a_tone_pair() {
+	// The reason lightening blends instead of scaling: scaling a channel down is all a
+	// multiply can do, so `shade(black, 384)` would be black — and a `ridge` border
+	// whose light tone was still black would have one tone, which is the whole
+	// difference between `ridge` and `solid`.
+	d := shade(black, 128)
+	l := shade(black, 384)
+	assert d.r == 0
+	assert l.r > 0
+	assert l.g == l.r
+	assert l.b == l.r
+	assert d != l
+}
+
+fn test_shade_of_a_translucent_colour_keeps_alpha_and_colour_together() {
+	s := shade(Color{ r: 100, g: 60, b: 40, a: 200 }, 128)
+	assert s.a == 100
+	assert s.r <= s.a
+	// Darkening halves the colour channels but the alpha goes from 200 to 100, so the
+	// ratio is kept rather than the colour being scaled away from its own alpha.
+	l := shade(Color{ r: 100, g: 60, b: 40, a: 200 }, 384)
+	assert l.a > 200
+	assert l.r <= l.a
+}

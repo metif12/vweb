@@ -266,6 +266,191 @@ fn size_context(b &display.Box) style.Context {
 // A rounded border takes the other path, because the corner is not a rectangle: the
 // bands have to follow the ellipse and be split between the two sides that meet at
 // each corner.
+// BorderBand is one painted run of a single border side.
+//
+// The two extents are separate because a band runs along one of two axes depending on the
+// style, and one number cannot mean both. `double` and the two-tone styles stack *across*
+// the border width, so their extent is `across` and they span the whole side; `dashed` and
+// `dotted` run *along* the side, so their extent is `length` and they take the whole
+// border width. Conflating them drew a dashed border's 18px marks as an 18px-thick solid
+// band running the length of the box, which is the first version of this.
+struct BorderBand {
+	at     int
+	across int
+	length int
+	color  raster.Color
+}
+
+// across_of and length_of are the two extents with the "the whole side" default filled
+// in, so a stacked band spans the side and a dashed band takes the whole border width.
+fn (b BorderBand) across_of(side_width int) int {
+	if b.across > 0 {
+		return b.across
+	}
+	return side_width
+}
+
+fn (b BorderBand) length_of(side_length int) int {
+	if b.length > 0 {
+		return b.length
+	}
+	return side_length
+}
+
+// The two shade scales a two-tone border style uses, as the numerator over 256 that
+// `shade` takes.
+//
+// CSS 2.1 leaves the exact shades of `groove`/`ridge`/`inset`/`outset` to the user
+// agent, so this engine's rule is written down rather than borrowed: half as bright for
+// the dark tone and half again brighter for the light one. The numbers matter less
+// than that they are fixed, because a golden image has to reproduce them.
+const dark_shade = 128
+
+const light_shade = 384
+
+// two_tone reports the dark and light tone a two-tone style paints, in the order the
+// *outer* half of a side takes them.
+//
+// `groove` and `ridge` split the difference across the whole border width, and
+// `inset`/`outset` split it across the two sides of the same axis -- which is why the
+// answer depends on which side it is rather than only on the style. A top or left side
+// and a bottom or right side swap, and that swap is the entire visible difference
+// between `inset` and `outset`.
+fn two_tone(s style.BorderStyle, is_top_or_left bool, col raster.Color) (raster.Color, raster.Color) {
+	dark := raster.shade(col, dark_shade)
+	light := raster.shade(col, light_shade)
+	match s {
+		// `inset` reads as pressed in: the whole top and left go dark, the whole bottom
+		// and right go light, and the two bands of a side all share one tone -- which is
+		// the same thing as one shaded band, and is why `inset` needs no gap.
+		.inset {
+			if is_top_or_left {
+				return dark, dark
+			}
+			return light, light
+		}
+		.outset {
+			if is_top_or_left {
+				return light, light
+			}
+			return dark, dark
+		}
+		// `groove` is a channel cut along the border: the outer edge is shadowed and the
+		// inner lip is lit, and the two swap on the opposite side. `ridge` is the same
+		// channel with the light and the dark exchanged, which is the whole difference
+		// between the two.
+		.groove {
+			if is_top_or_left {
+				return dark, light
+			}
+			return light, dark
+		}
+		.ridge {
+			if is_top_or_left {
+				return light, dark
+			}
+			return dark, light
+		}
+		else {
+			return col, col
+		}
+	}
+}
+
+// side_bands splits one border side into the bands its style paints, from the outer
+// edge inwards, and is what turns `border: 6px double black` into two bands instead of
+// one solid one.
+//
+// The rules, all of them this engine's own where CSS 2.1 leaves them open:
+//
+//   - `solid` is one band of the whole width, unchanged.
+//   - `double` is two bands with a gap the same width between them, so a width that
+//     cannot carry three stripes (less than 3) degrades to solid rather than drawing
+//     one stripe and calling it a rule.
+//   - `groove`, `ridge`, `inset` and `outset` are two bands, the outer half and the
+//     inner half, in the two tones.
+//   - `dashed` and `dotted` are a run of squares whose side is the border width, at a
+//     spacing that scales with it: `3:2` for dashes and `1:1` for dots.
+//
+// The dash geometry has to come from the width because a 1px border has to show the
+// smallest mark it can, and a 12px one a mark a reader can see as a dash rather than as
+// a dotted line. The last band is never trimmed to fit the length: the list is a plan
+// of rectangles, and the compositor's clip takes the overhang off the end.
+fn side_bands(s style.BorderStyle, length int, width int, col raster.Color, is_top_or_left bool) []BorderBand {
+	if width <= 0 || s == .none || s == .solid {
+		if width <= 0 {
+			return []BorderBand{}
+		}
+		return [BorderBand{ at: 0, across: width, color: col }]
+	}
+	match s {
+		.double {
+			if width < 3 {
+				return [BorderBand{ at: 0, across: width, color: col }]
+			}
+			third := width / 3
+			inner := width - 2 * third
+			// The gap is the middle third, and it is skipped rather than left between two
+			// touching bands: `double` is two rules with a space between them, and a space
+			// drawn as a band is not a space.
+			return [
+				BorderBand{ at: 0, across: third, color: col },
+				BorderBand{ at: 2 * third, across: inner, color: col },
+			]
+		}
+		.groove, .ridge, .inset, .outset {
+			outer, inner := two_tone(s, is_top_or_left, col)
+			half := width / 2
+			rest := width - half
+			return [
+				BorderBand{ at: 0, across: half, color: outer },
+				BorderBand{ at: half, across: rest, color: inner },
+			]
+		}
+		.dashed {
+			return dash_bands(length, width, col, 3, 2)
+		}
+		.dotted {
+			return dash_bands(length, width, col, 1, 1)
+		}
+		else {
+			return [BorderBand{ at: 0, across: width, color: col }]
+		}
+	}
+}
+
+// dash_bands is the run of square marks a dashed or dotted side paints. `on` and `off`
+// are the mark and the gap, in units of the border width, so a 6px dashed border marks
+// 18px and gaps 12px, and a 6px dotted one marks and gaps 6px.
+//
+// Each mark carries where it starts, so the gap between two marks is a gap and not a
+// shorter mark: painting them contiguously would draw a dashed border as a run of solid
+// bands with no spaces, which is what the first version did.
+fn dash_bands(length int, width int, col raster.Color, on int, off int) []BorderBand {
+	mark := width * on
+	mut gap := width * off
+	if mark <= 0 {
+		return []BorderBand{}
+	}
+	if gap <= 0 {
+		gap = mark
+	}
+	// The marks run until the side ends. The last one is not trimmed to a whole mark:
+	// the list is a plan of rectangles and the compositor's clip takes the overhang off
+	// the end, which is what keeps the far end of a side from ending on a gap.
+	mut out := []BorderBand{}
+	mut at := 0
+	for at < length {
+		out << BorderBand{ at: at, across: width, length: mark, color: col }
+		at += mark
+		if at >= length {
+			break
+		}
+		at += gap
+	}
+	return out
+}
+
 fn (mut p Painter) borders(b &display.Box) {
 	r := b.rect
 	mut w := [4]int{}
@@ -279,30 +464,83 @@ fn (mut p Painter) borders(b &display.Box) {
 		p.rounded_borders(b, corners, w)
 		return
 	}
-	if w[0] > 0 {
-		p.list.fill_rect(display.Rect{ x: r.x, y: r.y, width: r.width, height: w[0] },
-			b.style.border_color[0])
+	// Each side is drawn as the bands its style asks for, outer edge inwards, in the
+	// top, right, bottom, left order the compositor's corner geometry assumes. A side
+	// with a style has more than one band, which is the whole point of this loop: it
+	// used to be four single fills, and a `double` border drew as a solid one.
+	bands := [
+		side_bands(b.style.border_style[0], r.width, w[0], b.style.border_color[0], true),
+		side_bands(b.style.border_style[1], r.height, w[1], b.style.border_color[1], false),
+		side_bands(b.style.border_style[2], r.width, w[2], b.style.border_color[2], false),
+		side_bands(b.style.border_style[3], r.height, w[3], b.style.border_color[3], true),
+	]
+	// Each side's outer edge, the length along it and the border's thickness across it.
+	sides := [
+		Side{ x: r.x, y: r.y, length: r.width, thickness: w[0], horizontal: true },
+		Side{ x: r.x + r.width, y: r.y, length: r.height, thickness: w[1], horizontal: false },
+		Side{ x: r.x, y: r.y + r.height, length: r.width, thickness: w[2], horizontal: true },
+		Side{ x: r.x, y: r.y, length: r.height, thickness: w[3], horizontal: false },
+	]
+	// A band's two extents say which axis it is on, and that decides where its offset
+	// goes. A band with no `length` is stacked *across* the border — `double`, the
+	// two-tone styles — so its offset advances into the border and it spans the whole
+	// side. A band with a `length` is a dash running *along* the side, so its offset is a
+	// position along it and the band takes the whole border width. Reading
+	// `band.at` as the wrong one is what drew a double border's inner rule four pixels
+	// to the right and a dashes' marks marching diagonally down the box.
+	for si in 0 .. 4 {
+		mut at := sides[si]
+		for band in bands[si] {
+			thick := band.across_of(at.thickness)
+			if thick <= 0 {
+				continue
+			}
+			if band.length > 0 {
+				// A dash: fixed across the border, positioned along the side.
+				if at.horizontal {
+					y := if si == 2 { at.y - at.thickness } else { at.y }
+					p.list.fill_rect(display.Rect{
+						x:      at.x + band.at
+						y:      y
+						width:  band.length
+						height: thick
+					}, band.color)
+				} else {
+					x := if si == 1 { at.x - at.thickness } else { at.x }
+					p.list.fill_rect(display.Rect{
+						x:      x
+						y:      at.y + band.at
+						width:  thick
+						height: band.length
+					}, band.color)
+				}
+				continue
+			}
+			// A stacked band: whole side wide, offset into the border from the outer edge,
+			// which for a bottom or right side is measured from the far edge.
+			if at.horizontal {
+				by := if si == 2 { at.y - band.at - thick } else { at.y + band.at }
+				p.list.fill_rect(display.Rect{ x: at.x, y: by, width: at.length, height: thick },
+					band.color)
+			} else {
+				bx := if si == 1 { at.x - band.at - thick } else { at.x + band.at }
+				p.list.fill_rect(display.Rect{ x: bx, y: at.y, width: thick, height: at.length },
+					band.color)
+			}
+		}
 	}
-	if w[1] > 0 {
-		p.list.fill_rect(display.Rect{
-			x:      r.x + r.width - w[1]
-			y:      r.y
-			width:  w[1]
-			height: r.height
-		}, b.style.border_color[1])
-	}
-	if w[2] > 0 {
-		p.list.fill_rect(display.Rect{
-			x:      r.x
-			y:      r.y + r.height - w[2]
-			width:  r.width
-			height: w[2]
-		}, b.style.border_color[2])
-	}
-	if w[3] > 0 {
-		p.list.fill_rect(display.Rect{ x: r.x, y: r.y, width: w[3], height: r.height },
-			b.style.border_color[3])
-	}
+}
+
+// Side is one border side: its outer edge, the length along it, the thickness of the
+// border across it, and which way it runs. The loop above lays a band along it without a
+// special case per side, because the two extents of the band say which axis it uses.
+struct Side {
+mut:
+	x          int
+	y          int
+	length     int
+	thickness  int
+	horizontal bool
 }
 
 // rounded_borders draws the four sides as bands that follow the corner ellipse.
