@@ -2503,3 +2503,85 @@ fn test_a_table_does_not_upset_the_boxes_around_it() {
 	a := box_for(root, 'after')
 	assert a.rect.y >= t.rect.y + t.rect.height
 }
+
+// --- list markers -------------------------------------------------------------
+
+fn list_page(sheet string, items ...string) &Box {
+	// An `ol`, because the numbering rules are the ones that turn an index into text:
+	// a `ul` inherits `disc` and never reaches them.
+	mut body := el('body', '', '')
+	mut list := el('ol', 'l', '')
+	mut i := 0
+	for it in items {
+		mut li := el('li', 'li' + i.str(), '')
+		attach(mut li, text_el(it))
+		attach(mut list, li)
+		i++
+	}
+	attach(mut body, list)
+	return layouter(sheet, 400).layout(body)
+}
+
+fn test_a_list_item_gets_a_marker_box_of_its_own() {
+	// The marker is a box outside the principal one, and a `decimal` marker is text --
+	// so a list of three items carries three markers, and the second one says "2.".
+	root := list_page('ol { list-style-type: decimal }', 'one', 'two', 'three')
+	first := box_for(root, 'li0')
+	second := box_for(root, 'li1')
+	third := box_for(root, 'li2')
+	assert first.marker_glyphs.len > 0
+	assert second.marker_glyphs.len > 0
+	assert third.marker_glyphs.len > 0
+	// The marker is left of the item's own content and does not overlap it: the UA
+	// sheet's `padding-left` on the list is what makes room for it.
+	assert first.marker_rect.width == 0
+	mut marker_right := first.marker_glyphs[0].x
+	for g in first.marker_glyphs {
+		if g.x + 8 > marker_right {
+			marker_right = g.x + 8
+		}
+	}
+	assert marker_right <= f64(first.content.x)
+}
+
+fn test_the_marker_numbers_follow_the_item_index() {
+	// The index is counted by the *parent*, because a box cannot count itself: it does
+	// not know which of its siblings it is.
+	root := list_page('', 'a', 'b', 'c', 'd')
+	first := box_for(root, 'li0')
+	fourth := box_for(root, 'li3')
+	// "1." and "4." are both right-aligned against the item's content edge, so the
+	// wider marker starts further left: the numeral is wider and the marker grew.
+	assert fourth.marker_glyphs.len > 0
+	assert first.marker_glyphs.len > 0
+	assert fourth.marker_glyphs[0].x < first.marker_glyphs[0].x
+}
+
+fn test_a_disc_marker_is_a_shape_not_text() {
+	root := list_page('ol { list-style-type: disc }', 'one', 'two')
+	first := box_for(root, 'li0')
+	assert first.marker_kind == style.ListStyleType.disc
+	assert first.marker_glyphs.len == 0
+	assert first.marker_rect.width > 0
+	assert first.marker_rect.x + first.marker_rect.width <= first.content.x
+}
+
+fn test_no_marker_without_a_list_style_type() {
+	root := list_page('li { list-style-type: none }', 'one')
+	first := box_for(root, 'li0')
+	// Nothing is built, so both marker fields stay at their zero value -- a marker box
+	// that does not exist is not a box of size zero, it is an absent one.
+	assert first.marker_glyphs.len == 0
+	assert first.marker_rect.width == 0
+	assert first.marker_rect.height == 0
+}
+
+fn test_a_grouped_rule_no_longer_beats_a_single_one() {
+	// The bug the specificity fix settled, from the page that found it. The UA sheet's
+	// block list groups `li` with thirty other selectors, and summing gave it a
+	// specificity no single `li` rule could beat -- so every list lost its marker.
+	root := list_page('', 'one')
+	first := box_for(root, 'li0')
+	assert first.style.display == style.Display.list_item
+	assert first.marker_glyphs.len > 0 || first.marker_kind == .disc
+}

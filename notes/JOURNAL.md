@@ -1883,3 +1883,47 @@ with 12px gaps (`##################............`), and a 4px dotted one draws `#
 **Not done:** border *styles* on a rounded border still draw one band per side, because
 `rounded_band` takes a single band; and a dashed border's corner behaviour at a rounded
 corner is not defined here.
+
+---
+
+## 2026-10-13 - List markers, and a specificity bug that hid them
+
+**Status:** implemented, committed on `main` directly (a single-working-tree change, not
+a worktree batch). 5 new tests in `engine/display/display_test.v` and 1 in
+`engine/selector/selector_test.v`; all 18 test files green; the three consumer
+programs compile; a rendered page was inspected.
+
+**The marker box (CSS 2.1 12.5).** A `list-item` generates a marker outside its
+principal box: to the left for `ltr`, right for `rtl`, on the item's first line, and
+sized off the item's own font. The UA sheet's `padding-left: 40px` on the list is what
+makes room for it, exactly as a browser's does. A `disc`/`square` marker is a shape
+recorded on the box (`marker_rect` + `marker_kind`); `decimal`, the alphabets and the
+romans are text shaped at the marker and stored as `marker_glyphs`. The numbering is
+built by `marker_text`, and `list_index` is counted by the *parent* while it walks its
+children -- a box cannot count itself, because it does not know which of its siblings it
+is.
+
+**The specificity bug, which is the more important half.**
+`SelectorList.specificity()` summed the alternatives: `html, body, div, p, h1, h2, ...
+{ display: block }` arrived at a specificity of thirty type selectors, and therefore beat
+*any* single-selector rule that followed it. So `li { display: list-item }` was always
+overruled by the block list, and every list in the engine had been rendering without a
+marker since the UA sheet was written. The rule now takes the most specific alternative,
+which is what CSS compares. Verified by rendering: discs and `1.`/`2.`/`3.` now appear,
+and the full suite is unchanged.
+
+**Three bugs, all found by measuring.**
+
+1. The marker was built on the box holding the *text*, but a list item's text lives in an
+   anonymous box that `text_style_of` has already made `block` -- so asking it whether it
+   was a list item always answered no. The marker is now built by the item itself.
+2. The marker's horizontal shift came from `sub_x`, which is a *sub-pixel offset* and not
+   the advance, so it came out near zero and the marker's `1.` sat on top of the word
+   beside it. The width now comes from `advance`, and the render shows the marker's ink
+   ending 11px before the text's.
+3. The UA sheet listed `li` in the big `display: block` group, so `li` was never a list
+   item at all -- the marker had nothing to attach to.
+
+**Still missing:** `list-style-position: inside` places the marker as the first inline
+content rather than outside, which this engine does not do; `circle` falls back to `disc`;
+and `list-style` (the shorthand) is not expanded into its longhands.

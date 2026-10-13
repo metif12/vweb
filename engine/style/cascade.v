@@ -550,6 +550,8 @@ pub fn (e &Engine) winning(el &html.Tag, state &selector.State) []Declaration {
 			continue
 		}
 		for cand in rule.declarations {
+			if cand.decl.name == 'display' {
+			}
 			// Presence is tested with `in`, not by reading the value: a declaration's
 			// value is legitimately empty and would be indistinguishable from absent.
 			if cand.decl.name in best {
@@ -588,6 +590,8 @@ pub fn (e &Engine) compute(el &html.Tag, parent &Style, ctx &Context, state &sel
 	}
 	for decl in e.winning(el, state) {
 		s.apply(decl, ctx)
+	}
+	if el.name == 'li' {
 	}
 	for decl in inline_declarations(el) {
 		s.apply(Declaration{ decl: decl, origin: .author }, ctx)

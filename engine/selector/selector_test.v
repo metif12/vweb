@@ -350,3 +350,21 @@ fn test_the_selectors_real_pages_use_all_parse() {
 		assert parse(src) != none
 	}
 }
+
+// The specificity of a selector *list* is its most specific alternative, not the sum.
+//
+// The sum is what this engine computed first, and it is wrong in a way that shows on
+// every stylesheet: the user-agent sheet's `html, body, div, p, h1, h2, ... { display:
+// block }` would arrive at a specificity of thirty type selectors and beat any
+// single-selector rule that follows it. That is exactly how `li { display: list-item }`
+// came to be overruled by the block list, and every list in the engine lost its marker.
+fn test_specificity_of_a_list_is_its_most_specific_alternative() {
+	assert must_parse('p, div').specificity() == Specificity{0, 0, 1}
+	assert must_parse('p, div, a').specificity() == Specificity{0, 0, 1}
+	// The most specific one wins, whichever position it is in: an id anywhere in the
+	// list lifts the whole rule's specificity, and a type selector beside it does not
+	// drag it down.
+	assert must_parse('#a, p').specificity() == Specificity{1, 0, 0}
+	assert must_parse('p, #a').specificity() == Specificity{1, 0, 0}
+	assert must_parse('p, div .a, span').specificity() == Specificity{0, 1, 1}
+}

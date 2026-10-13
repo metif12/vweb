@@ -134,6 +134,21 @@ fn (mut p Painter) box(b &display.Box, invisible bool) {
 		if b.glyphs.len > 0 {
 			p.list.glyph_run(b.glyphs, b.style.color)
 		}
+		// The marker is drawn after the text so that a `list-style-position: inside`
+		// marker -- which this engine does not place inside -- and the item's own text
+		// never fight over the same pixel. A disc is a rounded rectangle of the right
+		// size, which is the coverage idiom the raster module already has for a partial
+		// pixel, so a bullet is the same shape at every diameter.
+		if b.marker_glyphs.len > 0 {
+			p.list.glyph_run(b.marker_glyphs, b.style.color)
+		}
+		if b.marker_kind == .disc {
+			r := b.marker_rect
+			p.list.rounded_rect(r, disc_corners(r), b.style.color)
+		}
+		if b.marker_kind == .square {
+			p.list.fill_rect(b.marker_rect, b.style.color)
+		}
 	}
 	// Atomic inline-level boxes are painted here rather than with the children, because
 	// their position comes from the line layout: they sit at the point the line breaker put
@@ -449,6 +464,20 @@ fn dash_bands(length int, width int, col raster.Color, on int, off int) []Border
 		at += gap
 	}
 	return out
+}
+
+// disc_corners is a disc of the given rectangle's size: four corners whose radius is
+// half the side, which is what the coverage function in `rounded.v` takes to draw a
+// circle. It is a helper rather than an inline literal because a disc's radius being
+// half its side is the fact that makes it a disc and not an ellipse.
+fn disc_corners(r display.Rect) raster.Corners {
+	rad := if r.width < r.height { r.width / 2 } else { r.height / 2 }
+	return raster.Corners{
+		tl: raster.Radius{ x: rad, y: rad }
+		tr: raster.Radius{ x: rad, y: rad }
+		br: raster.Radius{ x: rad, y: rad }
+		bl: raster.Radius{ x: rad, y: rad }
+	}
 }
 
 fn (mut p Painter) borders(b &display.Box) {

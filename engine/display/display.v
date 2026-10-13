@@ -101,6 +101,17 @@ pub mut:
 	// glyphs are text's positioned output, kept on the box so paint does not reshape
 	// the same run twice.
 	glyphs []text.PositionedGlyph
+	// marker_* are the list item's marker box (CSS 2.1 12.5), which is a box of its own
+	// outside the principal box. A `decimal` marker is text and lands in
+	// `marker_glyphs`; a `disc`/`circle`/`square` marker is a shape and lands in
+	// `marker_kind` with its size. Only a `list-item` box has either.
+	marker_glyphs []text.PositionedGlyph
+	marker_kind   style.ListStyleType
+	marker_rect   Rect
+	// list_index is this item's 1-based position among the list items of its parent,
+	// which is what "3." in an ordered list is. The parent knows the order and the box
+	// cannot count itself, so it is recorded by `place` when it walks the children.
+	list_index int
 	// line_count is how many lines the text broke into. The height follows from it and
 	// the line height, so it is not stored: a second number that has to agree with the
 	// first is a second thing to get wrong.
@@ -936,6 +947,10 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 
 	mut previous_bottom := 0
 	mut first := true
+	// The list-item index of the child about to be laid out. A parent counting its own
+	// children is the only place the order exists -- a box cannot count itself, because
+	// it does not know which of its siblings it is.
+	mut li_index := 0
 	// A table is the one box whose children are not laid out by block layout at all:
 	// its rows are sized by the column grid and its cells by the row they are in. So
 	// the child loop below is skipped for one, and `layout_table` does the work. The
@@ -956,7 +971,11 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 			cs := child.style
 			child_ctx := l.context(child.font_size)
 			cm := edges_of(cs.margin, &child_ctx, f64(content_width))
-			// Adjacent siblings' margins collapse to the larger of the two. This is the
+			if cs.display == .list_item {
+				li_index++
+				child.list_index = li_index
+			}
+			// Adjacent siblings' margins collapse to the larger of the two. The
 			// whole reason `p { margin: 1em 0 }` looks right.
 			mut top := cm.top
 			if !first {
@@ -1076,6 +1095,11 @@ fn (mut l Layouter) place(mut b &Box, containing_width int, x int, y int, bottom
 	} else {
 		b.content = Rect{ x: content_x, y: content_y, width: content_width }
 	}
+	// The marker box (CSS 2.1 12.5) is built here rather than in the text branch above,
+	// because a list item's marker belongs to the *item*, and the item is this box --
+	// the box holding the text is an anonymous one that `text_style_of` has already made
+	// `block`, so asking it whether it is a list item would always answer no.
+	l.place_marker(mut b, &ctx, content_x, content_width, content_y)
 
 	// A box whose content is child boxes is as wide as its widest child, by intrinsic
 	// size, plus that child's margins. Done here rather than inside the child loop above
@@ -2433,6 +2457,142 @@ fn intrinsic_atom_width(a Atom) f64 {
 // widths it reads carry the box's own frame, so the result is a border-box width.
 fn atomic_fit(bx &Box, available int) int {
 	return min_of(max_of(bx.min_content_width, available), bx.max_content_width)
+}
+
+// place_marker builds a list item's marker box (CSS 2.1 12.5), which is a box outside
+// the principal one: to its left for `ltr`, to its right for `rtl`, and it does not take
+// part in the line -- the UA sheet's `padding-left: 40px` on the list is what makes room
+// for it, exactly as a browser's does.
+//
+// `content_y` is the item's own content top, which is the first line's: that is the
+// vertical anchor a marker hangs from, so a one-line item and a four-line item put
+// their marker in the same place relative to their own top edge.
+//
+// The marker is either text (`decimal`, the alphabets, the romans) or a shape (`disc`,
+// `circle`, `square`). The text case is shaped here rather than in paint because shaping
+// is a font question and this is the layer that owns the font library.
+fn (mut l Layouter) place_marker(mut b &Box, ctx &style.Context, content_x int, content_width int, content_y int) {
+	if b.style.display != .list_item || b.style.list_style_type == .none {
+		return
+	}
+	fs := font_style_of(b.style, b.font_size, ctx)
+	m := l.fonts.line_metrics(&fs)
+	// The marker is sized off the item's own font, so a 28px item gets a marker a
+	// reader can see next to it rather than one drawn for a 16px default.
+	mut size := int(b.font_size / 2)
+	if size < 4 {
+		size = 4
+	}
+	baseline := int(f64(content_y) + m.ascent)
+	mp_style := b.style.list_style_type
+	if mp_style == .disc || mp_style == .square {
+		// A shape marker: recorded on the box for paint to fill, because which shape it
+		// is a paint question and the geometry is box arithmetic.
+		w := size
+		b.marker_kind = mp_style
+		top := baseline - w / 2
+		if b.style.direction == .rtl {
+			b.marker_rect = Rect{ x: content_x + content_width, y: top, width: w, height: w }
+		} else {
+			b.marker_rect = Rect{ x: content_x - size - 8, y: top, width: w, height: w }
+		}
+		return
+	}
+	label := marker_text(mp_style, b.list_index)
+	if label == '' {
+		return
+	}
+	mut glyphs := l.fonts.shape(label, &fs, 0, f64(baseline))
+	// Shifted by the marker's own width so the text ends where the marker box starts: a
+	// right-aligned marker, which is what "3." next to a paragraph looks like. The width
+	// comes from `advance`, because a positioned glyph carries its pen start and its
+	// sub-pixel offset but not how far it runs -- summing `sub_x` gives a number near
+	// zero, which left the marker's "1." overlapping the word beside it.
+	adv := l.fonts.advance(&fs, label)
+	origin := if b.style.direction == .rtl {
+		f64(content_x + content_width)
+	} else {
+		f64(content_x) - adv - 8
+	}
+	mut out := []text.PositionedGlyph{}
+	for g in glyphs {
+		out << text.PositionedGlyph{
+			x:       g.x + origin
+			y:       g.y
+			font_id: g.font_id
+			gid:     g.gid
+			size:    g.size
+			sub_x:   g.sub_x
+			sub_y:   g.sub_y
+			cluster: g.cluster
+			bitmap:  g.bitmap
+		}
+	}
+	b.marker_glyphs = out
+}
+
+// marker_text is what a list marker *says*: the numbering for the ordered types, and
+// nothing for the shapeless ones. The position argument is the item's index among its
+// siblings, which `place` counted.
+fn marker_text(kind style.ListStyleType, index int) string {
+	match kind {
+		.decimal { return index.str() + '.' }
+		.decimal_leading_zero {
+			if index < 10 {
+				return '0' + index.str() + '.'
+			}
+			return index.str() + '.'
+		}
+		.lower_alpha, .upper_alpha {
+			mut n := index
+			mut letters := []u8{}
+			for n > 0 {
+				mut r := (n - 1) % 26
+				n = (n - 1) / 26
+				// 97 is `a`.
+				letters << u8(97 + r)
+			}
+			mut out := ''
+			for i := letters.len - 1; i >= 0; i-- {
+				out += letters[i].ascii_str()
+			}
+			if kind == .upper_alpha {
+				return out.to_upper() + '.'
+			}
+			return out + '.'
+		}
+		.lower_roman, .upper_roman {
+			mut out := roman(index)
+			if out == '' {
+				return ''
+			}
+			if kind == .upper_roman {
+				return out.to_upper() + '.'
+			}
+			return out + '.'
+		}
+		else { return '' }
+	}
+}
+
+// roman is the Roman numeral for a positive number, lowercase, and the empty string for
+// anything else. It is the one numbering scheme with more than a digit per value, so it
+// is a table of values and names rather than arithmetic.
+fn roman(n int) string {
+	if n <= 0 || n > 3999 {
+		return ''
+	}
+	values := [1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1]
+	names := ['m', 'cm', 'd', 'cd', 'c', 'xc', 'l', 'xl', 'x', 'ix', 'v', 'iv', 'i']
+	mut left := n
+	mut out := ''
+	for i in 0 .. values.len {
+		for left >= values[i] {
+			out += names[i]
+			left -= values[i]
+		}
+	}
+	return out
 }
 
 fn fmax(a f64, b f64) f64 {

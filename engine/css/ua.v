@@ -54,7 +54,12 @@ pub const user_agent_css = 'html, body, div, p, h1, h2, h3, h4, h5, h6, section,
 	'figure { margin: 1em 40px; }\n' +
 	'ul, ol { margin: 1em 0; padding-left: 40px; }\n' +
 	'ul { list-style-type: disc; }\n' +
-	'ol { list-style-type: decimal; }\n' +
+	'ol { list-style-type: decimal; }\n' + 
+// `li` is a list *item*, which is a different display from block: it generates a
+// marker box of its own. Listing it as block -- which is what the group above did
+// -- left every list in the engine without its bullets or numbers, and a page of
+// lists looking like a page of paragraphs.
+'li { display: list-item; }\n' +
 	'dl { margin: 1em 0; }\n' +
 	'dd { margin-left: 40px; }\n' +
 	'pre { font-family: monospace; white-space: pre; margin: 1em 0; }\n' +

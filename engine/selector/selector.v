@@ -172,19 +172,27 @@ fn (s Specificity) add(other Specificity) Specificity {
 	return Specificity{s.ids + other.ids, s.classes + other.classes, s.types + other.types}
 }
 
-// specificity adds up the specificity of every complex selector in the list, which
-// is the specificity of the whole rule.
+// specificity is the specificity of the whole rule.
+//
+// It is the **most specific** alternative in the list, not the sum of them. Summing was
+// the first version and it is wrong in a way that shows on every stylesheet: a grouped
+// rule such as the user-agent sheet's `html, body, div, p, h1, h2, ... { display: block }`
+// would arrive at a specificity of thirty type selectors and beat *any* single-selector
+// rule that follows it -- so `li { display: list-item }` was always overruled by the
+// block list, and every list in the engine lost its marker. CSS compares the
+// alternatives of a selector list one at a time, and the winner of that comparison is
+// the one that counts, which is the maximum.
 pub fn (l SelectorList) specificity() Specificity {
-	mut ids := 0
-	mut classes := 0
-	mut types := 0
+	mut best := Specificity{}
+	mut first := true
 	for s in l {
 		t := s.specificity()
-		ids += t.ids
-		classes += t.classes
-		types += t.types
+		if first || t.cmp(best) > 0 {
+			best = t
+			first = false
+		}
 	}
-	return Specificity{ ids: ids, classes: classes, types: types }
+	return best
 }
 
 // specificity is the sum over the complex selector's compounds.
