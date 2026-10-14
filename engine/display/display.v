@@ -1400,11 +1400,19 @@ fn (mut l Layouter) layout_table(mut b &Box, ctx &style.Context, content_x int, 
 	if rows.len == 0 {
 		return top - content_y
 	}
+	// The grid: which column each cell starts in, so a spanning cell can occupy several
+	// and the columns it covers are the ones it is sized against.
+	grid := table_grid(rows)
 	mut cols := 0
-	for r in rows {
-		mut cells := table_cells(r)
-		if cells.len > cols {
-			cols = cells.len
+	for r in grid {
+		mut c := 0
+		for g in r {
+			if g.col + g.colspan > c {
+				c = g.col + g.colspan
+			}
+		}
+		if c > cols {
+			cols = c
 		}
 	}
 	if cols == 0 {
@@ -1423,26 +1431,52 @@ fn (mut l Layouter) layout_table(mut b &Box, ctx &style.Context, content_x int, 
 	mut row_h := []int{len: rows.len, init: 0}
 	for ri in 0 .. rows.len {
 		mut cells := table_cells(rows[ri])
-		for ci in 0 .. cols {
-			if ci >= cells.len {
-				continue
-			}
+		for ci in 0 .. cells.len {
+			g := grid[ri][ci]
 			mut cell := cells[ci]
 			cctx := l.context(cell.font_size)
 			ce := edges_of(cell.style.margin, &cctx, f64(content_width))
 			mut cf := []&Box{}
 			l.place(mut cell, content_width, content_x, content_y, false, cell_cb, mut cf)
 			w := cell.max_content_width + ce.left + ce.right
-			if w > maxc[ci] {
-				maxc[ci] = w
-			}
 			n := cell.min_content_width + ce.left + ce.right
-			if n > minc[ci] {
-				minc[ci] = n
+			// A spanning cell's content has to fit the *sum* of the columns it covers, so
+			// its requirement is shared out over them: each column carries an equal share
+			// rather than the whole of it. That is an approximation -- CSS 2.1 leaves the
+			// distribution to the implementation -- and it is the one that keeps a wide
+			// header from being squeezed into its first column while its later columns
+			// stay empty.
+			if g.colspan > 1 {
+				mut k := 0
+				for k < g.colspan && g.col + k < cols {
+					share := w / g.colspan
+					if share > maxc[g.col + k] {
+						maxc[g.col + k] = share
+					}
+					share_min := n / g.colspan
+					if share_min > minc[g.col + k] {
+						minc[g.col + k] = share_min
+					}
+					k++
+				}
+			} else {
+				if w > maxc[g.col] {
+					maxc[g.col] = w
+				}
+				if n > minc[g.col] {
+					minc[g.col] = n
+				}
 			}
+			// A rowspan cell is as tall as the rows it covers together, so its height is
+			// shared out over them for the same reason.
 			h := cell.rect.height + ce.top + ce.bottom
-			if h > row_h[ri] {
-				row_h[ri] = h
+			mut k := 0
+			for k < g.rowspan && ri + k < rows.len {
+				share := h / g.rowspan
+				if share > row_h[ri + k] {
+					row_h[ri + k] = share
+				}
+				k++
 			}
 		}
 	}
@@ -1465,7 +1499,6 @@ fn (mut l Layouter) layout_table(mut b &Box, ctx &style.Context, content_x int, 
 	mut y := top
 	for ri in 0 .. rows.len {
 		mut cells := table_cells(rows[ri])
-		mut x := content_x
 		// The row's height is measured *after* its cells are laid out at the widths their
 		// columns came out as, and not from pass 1. A cell placed at a column narrower
 		// than the line wraps its text to more lines and grows, so the height pass 1 read
@@ -1474,26 +1507,35 @@ fn (mut l Layouter) layout_table(mut b &Box, ctx &style.Context, content_x int, 
 		// like when it goes wrong.
 		mut rh := 0
 		for ci in 0 .. cells.len {
-			if ci >= cols {
-				continue
-			}
+			g := grid[ri][ci]
 			mut cell := cells[ci]
 			cctx := l.context(cell.font_size)
 			ce := edges_of(cell.style.margin, &cctx, f64(content_width))
-			cx := x + ce.left
+			want := columns_width(widths, g.col, g.colspan)
+			// The cell takes the width of the columns it covers, whatever its own content
+			// wanted. `box_width` would clamp an `auto` width down to the cell's
+			// max-content, which is right for a block and wrong for a cell: a spanning
+			// header would come out the width of its own text and leave the columns beside
+			// it empty. Setting the width explicitly is what bypasses that clamp, and the
+			// frame is taken off because `place` reads a specified width as the content box.
+			cp := edges_of(cell.style.padding, &cctx, f64(content_width))
+			frame := cell.border_px[1] + cell.border_px[3] + cp.left + cp.right
+			cell.style.width = style.Length{ unit: .px, value: f64(want - frame) }
+			cx := content_x + column_offset(widths, g.col) + ce.left
 			cy := y + ce.top
 			mut cf := []&Box{}
-			l.place(mut cell, widths[ci], cx, cy, false, cell_cb, mut cf)
+			l.place(mut cell, want, cx, cy, false, cell_cb, mut cf)
 			h := cell.rect.height + ce.top + ce.bottom
 			if h > rh {
 				rh = h
 			}
-			x += widths[ci] + ce.left + ce.right
 		}
 		// A cell's height is the row's, not its own content's, so a short cell in a tall
-		// row still paints its background down the whole row.
+		// row still paints its background down the whole row. A rowspan cell keeps the
+		// height it laid out at, because it is already as tall as the rows it covers.
 		for ci in 0 .. cells.len {
-			if ci >= cols {
+			g := grid[ri][ci]
+			if g.rowspan > 1 {
 				continue
 			}
 			mut cell := cells[ci]
@@ -1507,6 +1549,117 @@ fn (mut l Layouter) layout_table(mut b &Box, ctx &style.Context, content_x int, 
 		y += rh
 	}
 	return y - content_y
+}
+
+// CellSpan is one cell's position in the table's grid: the column it starts in and how
+// many columns it covers from there, and the same for rows.
+struct CellSpan {
+mut:
+	col     int
+	colspan int
+	rowspan int
+}
+
+// table_grid works out which column of the table each cell starts in, which is not its
+// index in the row: a cell with `colspan="2"` takes two columns, so the cells after it
+// start two further right. The grid is filled left to right and top to bottom, skipping
+// the columns an earlier row's `rowspan` has already taken.
+//
+// This is the only place spans are read, and it reads them off the element's own
+// attributes: `colspan` and `rowspan` are presentational HTML attributes, not CSS
+// properties, so they never reach the cascade.
+fn table_grid(rows []&Box) [][]CellSpan {
+	mut out := [][]CellSpan{}
+	mut taken := map[string]bool{}
+	for ri in 0 .. rows.len {
+		mut cells := table_cells(rows[ri])
+		mut line := []CellSpan{}
+		mut col := 0
+		for ci in 0 .. cells.len {
+			// Step over any column a cell in an earlier row still occupies.
+			for '${ri},${col}' in taken {
+				col++
+			}
+			sp_col, sp_row := cell_span(cells[ci])
+			line << CellSpan{ col: col, colspan: sp_col, rowspan: sp_row }
+			// Mark the columns and rows this cell covers, so the cells below start to
+			// the right of it.
+			mut r := 0
+			for r < sp_row {
+				mut c := 0
+				for c < sp_col {
+					taken['${ri + r},${col + c}'] = true
+					c++
+				}
+				r++
+			}
+			col += sp_col
+		}
+		out << line
+	}
+	return out
+}
+
+// cell_span reads the spanning attributes off a cell, defaulting to one in each axis --
+// which is what a cell without the attributes is.
+fn cell_span(c &Box) (int, int) {
+	mut cs := 1
+	mut rs := 1
+	if c.element == unsafe { nil } {
+		return cs, rs
+	}
+	if v := c.element.attributes['colspan'] {
+		if v.len > 0 {
+			n := v.int()
+			if n > 0 {
+				cs = n
+			}
+		}
+	}
+	if v := c.element.attributes['rowspan'] {
+		if v.len > 0 {
+			n := v.int()
+			if n > 0 {
+				rs = n
+			}
+		}
+	}
+	if cs < 1 {
+		cs = 1
+	}
+	if rs < 1 {
+		rs = 1
+	}
+	if rs > 1000 {
+		// A `rowspan` of 0 means "take the rest of the table" in HTML, which this engine
+		// does not implement; treating it as one rather than as an unbounded span is the
+		// safe reading, and it is recorded in PHASES.md.
+		rs = 1
+	}
+	return cs, rs
+}
+
+// column_offset is the distance from the table's left edge to the start of column `col`.
+fn column_offset(widths []int, col int) int {
+	mut x := 0
+	mut i := 0
+	for i < col && i < widths.len {
+		x += widths[i]
+		i++
+	}
+	return x
+}
+
+// columns_width is the total width of `span` columns from `col`, which is what a
+// spanning cell is laid out at.
+fn columns_width(widths []int, col int, span int) int {
+	mut w := 0
+	mut i := col
+	for i < col + span && i < widths.len {
+		w += widths[i]
+		i++
+	}
+	return w
 }
 
 // wanted_width is the width the table's own `width` asked for, capped at what the line

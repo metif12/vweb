@@ -2585,3 +2585,45 @@ fn test_a_grouped_rule_no_longer_beats_a_single_one() {
 	assert first.style.display == style.Display.list_item
 	assert first.marker_glyphs.len > 0 || first.marker_kind == .disc
 }
+
+fn test_a_cell_can_span_several_columns() {
+	// A spanning cell is laid out across the sum of the columns it covers, and the
+	// columns under it are sized against its content rather than each on their own.
+	//
+	// The attributes are set by hand because `el` builds a bare Tag: a colspan exists to
+	// be read off the element, not off the cascade.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut wide := el('td', 'wide', '')
+	wide.attributes['colspan'] = '2'
+	mut a := el('td', 'a', '')
+	mut b := el('td', 'b', '')
+	mut tr2 := el('tr', 'r2', '')
+	mut c := el('td', 'c', '')
+	mut d := el('td', 'd', '')
+	attach(mut wide, text_el('a header that spans two columns'))
+	attach(mut a, text_el('aa'))
+	attach(mut b, text_el('bb'))
+	attach(mut tr, wide, a)
+	attach(mut c, text_el('cc'))
+	attach(mut d, text_el('dd'))
+	attach(mut tr2, c, d)
+	attach(mut table, tr, tr2)
+	attach(mut body, table)
+	root := layouter('', 500).layout(body)
+	w := box_for(root, 'wide')
+	third := box_for(root, 'a')
+	first := box_for(root, 'c')
+	second := box_for(root, 'd')
+	// `wide` spans columns 0 and 1, so it starts where the first column does and covers
+	// both: it is as wide as the two columns under it together.
+	assert w.rect.x == first.rect.x
+	assert w.rect.width >= first.rect.width + second.rect.width
+	// `a` is the third cell of the first row and comes after the two columns the
+	// spanning cell took, so it starts where the spanning cell ends.
+	assert third.rect.x == w.rect.x + w.rect.width
+	// The second row's cells are inside the spanning cell's own width.
+	assert first.rect.x < second.rect.x
+	assert second.rect.x + second.rect.width <= w.rect.x + w.rect.width
+}

@@ -1927,3 +1927,34 @@ and the full suite is unchanged.
 **Still missing:** `list-style-position: inside` places the marker as the first inline
 content rather than outside, which this engine does not do; `circle` falls back to `disc`;
 and `list-style` (the shorthand) is not expanded into its longhands.
+
+---
+
+## 2026-10-13 - `colspan` and `rowspan`: the spans, from the HTML attributes
+
+**Status:** implemented on `main`. 1 new test in `engine/display/display_test.v`;
+all 18 test files green; the three consumers compile; a spanning table was rendered and
+its box tree read with `tools/boxes.v`.
+
+**Where the spans come from.** `colspan` and `rowspan` are presentational HTML
+attributes, not CSS properties, so they never reach the cascade. `table_grid` reads them
+off each cell's element and works out which column of the table every cell starts in --
+which is not its index in the row, because a spanning cell takes two columns and the
+cells after it start two further right. The grid is filled left to right and top to
+bottom, skipping the columns an earlier row's `rowspan` has already taken.
+
+**The sizing.** A spanning cell's content has to fit the *sum* of the columns it covers,
+so its requirement is shared out over them: each column carries an equal share rather
+than the whole of it. That is an approximation -- CSS 2.1 leaves the distribution to the
+implementation -- and it is the one that keeps a wide header from being squeezed into
+its first column while its later columns stay empty. A rowspan cell's height is shared
+out over the rows it covers for the same reason.
+
+**The bug the test caught.** `box_width` clamps an `auto` width down to the cell's own
+max-content, which is right for a block and wrong for a cell: a spanning header came out
+the width of its own text and left the columns beside it empty. A cell now takes the
+width of the columns it covers as an explicit width, which bypasses that clamp.
+
+**Not done:** `rowspan="0"` (HTML's "take the rest of the table") is read as 1 and
+recorded; the height distribution is an equal share rather than CSS 2.1 17.5.3's
+constrained-height distribution; and `table-layout: fixed` is still absent.
