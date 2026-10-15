@@ -1958,3 +1958,28 @@ width of the columns it covers as an explicit width, which bypasses that clamp.
 **Not done:** `rowspan="0"` (HTML's "take the rest of the table") is read as 1 and
 recorded; the height distribution is an equal share rather than CSS 2.1 17.5.3's
 constrained-height distribution; and `table-layout: fixed` is still absent.
+
+---
+
+## 2026-10-13 - `table-layout: fixed`: the columns come from the cells, not the content
+
+**Status:** implemented on `main`. 2 new tests in `engine/display/display_test.v`; all 18
+test files green; the three consumers compile; a page with an auto and a fixed table side
+by side was rendered.
+
+**The rule, as implemented.** Each column takes the declared width of a cell that covers
+it alone; whatever is left of the table's width is shared equally out among the columns
+that declared nothing; and a cell spanning several columns is left out of the declaration
+pass, taking its width later from the columns it lands on. A cell that declares a
+percentage is treated as undeclared, because a percentage of the table's width is not a
+number yet -- recorded rather than half-done.
+
+**Why it is worth having.** A fixed table's columns do not move when its content changes,
+which is what a page using a table as a grid is asking for. Measured side by side on one
+page: with `auto`, a long word in the first cell gave that column the width of its own
+content and squeezed the second cell; with `fixed`, the two columns came out equal at 150
+each and the content fitted to them.
+
+**Control:** with the fixed branch disabled the two new tests go red -- `one.rect.width`
+came out 139 (content-sized) where 50 was declared, and the second column's x moved with
+it.

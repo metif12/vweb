@@ -1495,7 +1495,15 @@ fn (mut l Layouter) layout_table(mut b &Box, ctx &style.Context, content_x int, 
 	// `width: 100%` leaves the right part of the table blank while its border still runs
 	// to the full width -- which is what every stylesheet that sets a table width asks
 	// for and not what it gets.
-	mut widths := column_widths(minc, maxc, content_width, wanted_width(b.style, ctx, content_width))
+	//
+	// `table-layout: fixed` takes its widths from the cells' own declarations instead of
+	// from the measured content, so the columns are stable as the content changes.
+	mut wanted := wanted_width(b.style, ctx, content_width)
+	mut widths := if b.style.table_layout == .fixed {
+		fixed_columns(rows, content_width, wanted)
+	} else {
+		column_widths(minc, maxc, content_width, wanted)
+	}
 	mut y := top
 	for ri in 0 .. rows.len {
 		mut cells := table_cells(rows[ri])
@@ -1639,7 +1647,100 @@ fn cell_span(c &Box) (int, int) {
 	return cs, rs
 }
 
-// column_offset is the distance from the table's left edge to the start of column `col`.
+// fixed_columns is `table-layout: fixed` (CSS 2.1 17.5.2): the columns come from the
+// widths the cells declare and never from what the content measures.
+//
+// The rule, as this engine implements it: each column takes the declared width of a cell
+// that covers it alone, and whatever is left of the table's width is shared equally out
+// among the columns that declared nothing. A cell spanning several columns is left out
+// of the declaration pass -- its own width is decided later, by the columns it lands on,
+// exactly as a browser's is.
+//
+// Why this is worth having: a fixed table's columns do not move when its content does,
+// which is what a page using a table as a grid is asking for. The alternative -- always
+// measuring -- is what makes a table of numbers reshuffle its columns on every row.
+fn fixed_columns(rows []&Box, available int, wanted int) []int {
+	mut widths := []int{}
+	if rows.len == 0 {
+		return widths
+	}
+	// The grid of the first row decides the column count and which cell starts where.
+	grid := table_grid(rows)
+	mut cols := 0
+	for r in grid {
+		mut c := 0
+		for g in r {
+			if g.col + g.colspan > c {
+				c = g.col + g.colspan
+			}
+		}
+		if c > cols {
+			cols = c
+		}
+	}
+	if cols == 0 {
+		return widths
+	}
+	widths = []int{len: cols, init: 0}
+	mut declared := []bool{len: cols, init: false}
+	mut total := 0
+	mut unspecified := 0
+	cells := table_cells(rows[0])
+	for ci in 0 .. cells.len {
+		if ci >= grid[0].len {
+			break
+		}
+		g := grid[0][ci]
+		if g.colspan > 1 {
+			continue
+		}
+		if g.col >= cols {
+			continue
+		}
+		d := cell_declared_width(cells[ci])
+		if d > 0 {
+			widths[g.col] = d
+			declared[g.col] = true
+			total += d
+		}
+	}
+	for ci in 0 .. cols {
+		if !declared[ci] {
+			unspecified++
+		}
+	}
+	// The width the table is aiming at is its own `width` when it has one, and the space
+	// available when it does not -- a fixed table with no width still has to fit the
+	// line it sits in.
+	target := if wanted > 0 { wanted } else { available }
+	left := target - total
+	if left > 0 && unspecified > 0 {
+		share := left / unspecified
+		for ci in 0 .. cols {
+			if !declared[ci] {
+				widths[ci] = share
+			}
+		}
+	}
+	return widths
+}
+
+// cell_declared_width is the width a cell asks for, or 0 when it asks for `auto`.
+//
+// A percentage is of the table's own width rather than the cell's, which is what makes
+// `width: 50%` on two cells fill a fixed table without either of them knowing the other
+// exists.
+fn cell_declared_width(c &Box) int {
+	w := c.style.width
+	if w.unit == .auto || w.unit == .none {
+		return 0
+	}
+	if w.unit == .percent {
+		return 0
+	}
+	return px(w.value)
+}
+
 fn column_offset(widths []int, col int) int {
 	mut x := 0
 	mut i := 0

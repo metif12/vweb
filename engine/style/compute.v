@@ -234,6 +234,16 @@ fn parse_visibility(text string) ?Visibility {
 	}
 }
 
+// parse_table_layout reads CSS 2.1 17.5.2's `table-layout`, which says where a table's
+// column widths come from.
+fn parse_table_layout(text string) ?TableLayout {
+	return match text.trim_space().to_lower() {
+		'auto' { TableLayout.auto }
+		'fixed' { TableLayout.fixed }
+		else { return none }
+	}
+}
+
 // parse_overflow reads CSS 2.1 11.1.
 fn parse_overflow(text string) ?Overflow {
 	return match text.trim_space().to_lower() {

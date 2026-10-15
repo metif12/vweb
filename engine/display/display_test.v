@@ -2627,3 +2627,51 @@ fn test_a_cell_can_span_several_columns() {
 	assert first.rect.x < second.rect.x
 	assert second.rect.x + second.rect.width <= w.rect.x + w.rect.width
 }
+
+fn test_a_fixed_table_takes_its_columns_from_the_cells() {
+	// A fixed table's columns come from what its cells declare, not from what the content
+	// measures -- so a long word in a short cell does not widen its column.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut a := el('td', 'a', '')
+	mut b := el('td', 'b', '')
+	attach(mut a, text_el('aa'))
+	attach(mut b, text_el('bb'))
+	attach(mut tr, a, b)
+	attach(mut table, tr)
+	attach(mut body, table)
+	root := layouter('table { table-layout: fixed; width: 200px } td { width: 50px }',
+		400).layout(body)
+	one := box_for(root, 'a')
+	two := box_for(root, 'b')
+	assert one.rect.x == 0
+	assert one.rect.width == 50
+	assert two.rect.x == 50
+	assert two.rect.width == 50
+	// The declared widths take 100 of the 200 the table asked for, and the rest is left
+	// with the columns that declared nothing -- of which there are none, because both
+	// cells declared.
+}
+
+fn test_a_fixed_table_gives_the_rest_to_the_undeclared_columns() {
+	// One cell declares a width and the other declares nothing, so the second takes what
+	// is left of the table's width rather than its own content.
+	mut body := el('body', '', '')
+	mut table := el('table', 't', '')
+	mut tr := el('tr', 'r1', '')
+	mut a := el('td', 'a', '')
+	mut b := el('td', 'b', '')
+	attach(mut a, text_el('aa'))
+	attach(mut b, text_el('bb'))
+	attach(mut tr, a, b)
+	attach(mut table, tr)
+	attach(mut body, table)
+	root := layouter('table { table-layout: fixed; width: 200px } td:first-child { width: 60px }',
+		400).layout(body)
+	one := box_for(root, 'a')
+	two := box_for(root, 'b')
+	assert one.rect.width == 60
+	assert two.rect.x == 60
+	assert two.rect.width == 140
+}

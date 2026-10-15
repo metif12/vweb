@@ -43,12 +43,14 @@ pub mut:
 	text_align          TextAlign
 	text_decoration     TextDecoration
 	white_space         WhiteSpace
-	direction           Direction
-	margin              Edges
-	padding             Edges
-	border_width        Edges
-	border_color        [4]raster.Color
-	border_style        [4]BorderStyle
+	// table_layout is not inherited, so it stays at its initial value for every child.
+	table_layout TableLayout
+	direction    Direction
+	margin       Edges
+	padding      Edges
+	border_width Edges
+	border_color [4]raster.Color
+	border_style [4]BorderStyle
 	// border_radius is the four corner radii, horizontal and vertical, in CSS's
 	// clockwise order from the top-left. The two arrays are the values before and
 	// after a `/`: `border-radius: 10px / 20px` is a corner 10 wide and 20 tall,
@@ -185,6 +187,18 @@ pub enum WhiteSpace {
 	nowrap
 	pre_wrap
 	pre_line
+}
+
+// TableLayout is how a table works out its column widths: from the content, or from
+// what the cells declare.
+//
+// The two are not interchangeable and a stylesheet that says `fixed` means it: a fixed
+// table lays out its columns from the widths its cells ask for and only *then* lays the
+// content out to fit them, which is what makes a table's columns stable as its content
+// changes. `auto` measures the content and lets it decide.
+pub enum TableLayout {
+	auto
+	fixed
 }
 
 pub enum Direction {
@@ -331,6 +345,7 @@ pub fn initial() Style {
 		text_align:          .start
 		text_decoration:     .none
 		white_space:         .normal
+		table_layout:        .auto
 		direction:           .ltr
 		margin:              Edges{}
 		padding:             Edges{}

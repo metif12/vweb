@@ -333,7 +333,7 @@ const supported_properties = ['background', 'background-color', 'background-imag
 	'margin-left', 'max-height', 'max-width', 'min-height', 'min-width', 'opacity', 'overflow',
 	'padding', 'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'position', 'right',
 	'text-align', 'text-decoration', 'text-transform', 'top', 'vertical-align', 'visibility',
-	'white-space', 'width', 'z-index']
+	'white-space', 'table-layout', 'width', 'z-index']
 
 // supports_property reports whether the cascade can act on a property at all.
 pub fn supports_property(name string) bool {
@@ -669,6 +669,7 @@ pub fn (mut s Style) apply(decl Declaration, ctx &Context) {
 		'text-decoration' { s.text_decoration = parse_text_decoration(v) or { return } }
 		'text-transform' { s.text_transform = parse_text_transform(v) or { return } }
 		'white-space' { s.white_space = parse_white_space(v) or { return } }
+		'table-layout' { s.table_layout = parse_table_layout(v) or { return } }
 		'direction' { s.direction = parse_direction(v) or { return } }
 		'vertical-align' { s.vertical_align = parse_vertical_align(v) or { return } }
 		'list-style-type' { s.list_style_type = parse_list_style_type(v) or { return } }
