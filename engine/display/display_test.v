@@ -1688,6 +1688,125 @@ fn test_vertical_align_on_a_block_does_not_lift_its_text() {
 	assert raised.content.height == plain.content.height
 }
 
+fn test_atom_dir_classifies_by_first_strong_character() {
+	assert atom_dir(Atom{ content: 'abc' }) == .ltr
+	assert atom_dir(Atom{ content: 'متن' }) == .rtl
+	assert atom_dir(Atom{ content: ' ' }) == .neutral
+	assert atom_dir(Atom{ content: '123' }) == .ltr
+	assert atom_dir(Atom{ content: 'a1' }) == .ltr
+	assert atom_dir(Atom{ content: '1متن' }) == .ltr
+}
+
+fn test_resolve_neutrals_takes_neighbours_or_paragraph() {
+	// Between two agreeing neighbours, theirs.
+	mut same := [DirClass.rtl, .neutral, .rtl]
+	resolve_neutrals(mut same, true)
+	assert same == [DirClass.rtl, .rtl, .rtl]
+	// Between disagreeing neighbours, the paragraph's.
+	mut split := [DirClass.ltr, .neutral, .rtl]
+	resolve_neutrals(mut split, true)
+	assert split == [DirClass.ltr, .rtl, .rtl]
+	// At the edges, the paragraph is the only neighbour there is.
+	mut edge := [DirClass.neutral, .ltr]
+	resolve_neutrals(mut edge, true)
+	assert edge == [DirClass.rtl, .ltr]
+}
+
+fn test_order_visual_reverses_runs_for_an_rtl_paragraph() {
+	// Logical "متن abc": the runs swap sides, the atoms inside them do not move --
+	// the shaper lays each segment's words in the order given, so handing them
+	// over reversed would bring them back double-reversed. (The trailing space is
+	// `shape_line`'s to strip, on the visual edge it now sits on.)
+	atoms := [Atom{ run: 0, content: 'متن', width: 10 }, Atom{
+		run:     0
+		content: ' '
+		width:   4
+		space:   true
+	}, Atom{ run: 0, content: 'abc', width: 12 }]
+	classes := [DirClass.rtl, .rtl, .ltr]
+	neutral := [false, true, false]
+	visual, _, _ := order_visual(atoms, classes, neutral, true)
+	assert visual.map(it.content) == ['abc', ' ', 'متن']
+}
+
+fn test_order_visual_keeps_an_ltr_run_reading_left_to_right() {
+	// The Latin words inside a Persian sentence keep their own order: only the
+	// runs move, never the words within one.
+	atoms := [Atom{ run: 0, content: 'متن', width: 10 }, Atom{
+		run:     0
+		content: ' '
+		width:   4
+		space:   true
+	}, Atom{ run: 0, content: 'aa', width: 8 }, Atom{
+		run:     0
+		content: ' '
+		width:   4
+		space:   true
+	}, Atom{ run: 0, content: 'bb', width: 8 }]
+	classes := [DirClass.rtl, .rtl, .ltr, .ltr, .ltr]
+	neutral := [false, true, false, true, false]
+	visual, _, _ := order_visual(atoms, classes, neutral, true)
+	assert visual.map(it.content) == ['aa', ' ', 'bb', ' ', 'متن']
+}
+
+fn test_order_visual_keeps_a_merged_space_inside_its_run() {
+	// "abc 123": the space is flanked by the class it resolved to, so it merges
+	// and the run crosses the paragraph untouched -- unlike the boundary space
+	// above, which stands alone as a separator.
+	atoms := [Atom{ run: 0, content: 'abc', width: 12 }, Atom{
+		run:     0
+		content: ' '
+		width:   4
+		space:   true
+	}, Atom{ run: 0, content: '123', width: 12 }]
+	classes := [DirClass.ltr, .ltr, .ltr]
+	neutral := [false, true, false]
+	visual, _, units := order_visual(atoms, classes, neutral, true)
+	assert visual.map(it.content) == ['abc', ' ', '123']
+	assert units == [0, 0, 0]
+}
+
+fn test_a_mixed_line_in_an_rtl_box_reads_right_to_left() {
+	// End to end through shaping: "متن abc" in an RTL box puts the English word
+	// leftmost, so its three glyphs come first and every one of them sits left of
+	// the Persian ink. Latin shapes 1:1, so the first three glyphs *are* the word,
+	// whichever way spaces shape -- and their identity is checked, not assumed.
+	mut b := plain_box('div { ' + rtl_font + 'direction: rtl }', 800, 'متن abc', true)
+	abc := plain_box('div { ' + rtl_font + 'direction: rtl }', 800, 'abc', true)
+	assert b.glyphs.len > 3
+	assert gids_of(b)[..3].clone() == gids_of(abc)
+	mut first_max := b.glyphs[0].x
+	for g in b.glyphs[..3].clone() {
+		if g.x > first_max {
+			first_max = g.x
+		}
+	}
+	assert first_max < max_x_of(b.glyphs)
+	assert min_x_of(b.glyphs[..3].clone()) == min_x_of(b.glyphs)
+}
+
+fn test_a_mixed_line_in_an_ltr_box_reads_left_to_right() {
+	// The mirror: the same words in a left-to-right box keep logical order, so the
+	// English word comes last and sits rightmost.
+	mut b := plain_box('div { ' + rtl_font + '}', 800, 'متن abc', true)
+	abc := plain_box('div { ' + rtl_font + '}', 800, 'abc', true)
+	assert b.glyphs.len > 3
+	assert gids_of(b)[b.glyphs.len - 3..].clone() == gids_of(abc)
+	last := b.glyphs[b.glyphs.len - 3..].clone()
+	assert max_x_of(last) == max_x_of(b.glyphs)
+	assert min_x_of(last) > min_x_of(b.glyphs)
+}
+
+fn test_digits_stay_with_their_latin_word_in_an_rtl_box() {
+	// "abc 123" is one left-to-right run even in a Persian paragraph: the pure
+	// line keeps logical order, so both boxes shape the same glyphs and only the
+	// anchor moves -- the number does not detach and mirror to the other side.
+	mut rtl := plain_box('div { ' + rtl_font + 'direction: rtl }', 800, 'abc 123', true)
+	ltr := plain_box('div { ' + rtl_font + '}', 800, 'abc 123', true)
+	assert gids_of(rtl) == gids_of(ltr)
+	assert rtl.glyphs[0].x > ltr.glyphs[0].x
+}
+
 fn atomic_line(sheet string) &Box {
 	mut body := el('body', '', '')
 	mut div := el('div', 'd', '')

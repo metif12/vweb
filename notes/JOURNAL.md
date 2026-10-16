@@ -2056,3 +2056,32 @@ and the cause was a stale binary -- `vweb.exe` had been built before the edits
 while `v test` always compiles fresh. Rebuilt, re-rendered, all three features
 present. The binary's build date is now something to check before trusting a
 render.
+
+---
+
+## 2026-10-13 - Mixed-direction lines read visually (bidi-lite in layout_runs)
+
+**Status:** implemented on `main`, 18/18 green, visually verified: an RTL line
+"shmare 123 va kalame abc tamam" renders as "tamam abc kalame va 123 shmare",
+flush right with every space in place; pure lines pixel-identical to before.
+
+**Design.** Maximal same-direction atom runs are the units: reversed in order
+for RTL paragraphs, kept for LTR; neutrals take agreeing neighbours else the
+paragraph. A same-side space merges ("abc 123" stays one run); a boundary space
+stands alone as a separator ("shmare 123" becomes "123 shmare" WITH the space).
+ASCII letters and digits are strong LTR so numbers never detach from Latin
+words. Joining splits on the same units, and RTL segments are measured as
+shaped (was: whole line by box direction). A line never starts or ends with a
+collapsible space in *visual* order -- reordering moves interior spaces to the
+edges, and the strip moved with it.
+
+**The mistake that cost a round trip.** The first version also reversed atoms
+*inside* RTL runs -- and the mirror test went red, which is how it got caught.
+Reading the bridge (`text/shape.v` + vtext `layout_paragraph`) showed why: the
+shaper already returns glyphs in visual order *within* a segment (full UBA per
+segment, base auto). Reversing words before handing them over double-reverses
+them. Only run order moves; words inside a run never do. Pure lines are single
+runs and pass through untouched.
+
+**Not UBA:** no explicit embeddings, no weak types, no bracket mirroring. Math
+in RTL text may mirror. Recorded in PHASES.md.

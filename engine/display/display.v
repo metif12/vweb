@@ -2618,14 +2618,40 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, 
 	// refuses that), so stripping the end cannot empty it; the shape below still
 	// tolerates an empty line, for a caller that does not come through the loop.
 	ws := b.style.white_space
-	mut atoms := atoms_in
+	mut atoms := atoms_in.clone()
+	// Direction first, shaping second: a mixed line is reordered from logical to
+	// visual order before it is joined into segments, so each segment holds visual
+	// neighbours and the shaper joins what the reader's eye joins. The pure line
+	// is one maximal run and passes through untouched. Classification is per atom,
+	// not per run, because one text node routinely holds two directions.
+	mut classes := []DirClass{cap: atoms.len}
+	mut was_neutral := []bool{cap: atoms.len}
+	for a in atoms {
+		d := atom_dir(a)
+		classes << d
+		was_neutral << (d == .neutral)
+	}
+	resolve_neutrals(mut classes, rtl)
+	vis_a, vis_c, vis_u := order_visual(atoms, classes, was_neutral, rtl)
+	atoms = vis_a.clone()
+	classes = vis_c.clone()
+	mut units := vis_u.clone()
 	if ws == .normal || ws == .nowrap || ws == .pre_line {
+		// Both visual edges, not just the trailing one: reordering moves interior
+		// spaces to the line's visual edges, and a line starts and ends with ink.
+		// For a pure line this is the same trailing strip as before (a line never
+		// starts with a space), so nothing that was right moves.
+		for atoms.len > 0 && !atoms[0].is_box && atoms[0].space && atoms[0].content == ' ' {
+			atoms = atoms[1..]
+			classes = classes[1..]
+		}
 		for atoms.len > 0 {
 			last := atoms[atoms.len - 1]
 			if last.is_box || !last.space || last.content != ' ' {
 				break
 			}
 			atoms = atoms[..atoms.len - 1]
+			classes = classes[..classes.len - 1]
 		}
 	}
 	// Half-leading, CSS 2.1 10.8.1: each item's leading is split half above and half below
@@ -2674,7 +2700,14 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, 
 		}
 		mut j := i
 		mut sb := strings.new_builder(32)
-		for j < atoms.len && atoms[j].run == atoms[i].run {
+		// Same run, same direction *and* same visual unit: a segment is shaped in
+		// one call, and the shaper lays its words in the order given, so joining
+		// two directions would lay one of them backwards. The reorder above
+		// already put visual neighbours next to each other, so splitting here
+		// loses no joining -- and a separator space never shares its neighbours'
+		// unit even when it shares their run and class.
+		for j < atoms.len && atoms[j].run == atoms[i].run && classes[j] == classes[i]
+			&& units[j] == units[i] {
 			sb.write_string(atoms[j].content)
 			j++
 		}
@@ -2688,7 +2721,7 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, 
 		for k in i .. j {
 			seg_w += atoms[k].width
 		}
-		if rtl {
+		if classes[i] == .rtl {
 			// The atoms' widths are each word measured on its own, and Arabic joining
 			// makes a word a different width when it is shaped with its neighbours than
 			// when it is shaped alone. Both directions are measured: on the default face
@@ -2698,6 +2731,9 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, 
 			// on, so the segment is measured the way the shaper will draw it and the
 			// line is anchored by that -- otherwise the ink ends short of the right edge
 			// by exactly the difference the font happens to introduce.
+			// Per segment, not per line: in a mixed line the Persian segments need
+			// this and the Latin ones do not, and measuring the Latin ones this way
+			// would move every pure-LTR width this engine has ever reported.
 			seg_w = l.fonts.advance(&run_style, seg_str)
 		}
 		segs << Segment{
@@ -2725,7 +2761,7 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, 
 	for s in segs {
 		total += s.width
 	}
-	free := f64(gap.right - gap.left) - total
+	spare := f64(gap.right - gap.left) - total
 	// Justification shares the leftover space between the line's own spaces, on every
 	// line but the last -- CSS gives the last line the block's start alignment -- and
 	// only when there is both a space to share it between and space left to share. A
@@ -2744,8 +2780,8 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, 
 				n++
 			}
 		}
-		if n > 0 && free > 0.0 {
-			extra = free / f64(n)
+		if n > 0 && spare > 0.0 {
+			extra = spare / f64(n)
 		}
 	}
 	mut pen := f64(gap.left)
@@ -2757,7 +2793,7 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, 
 		place_physical = if rtl { style.TextAlign.right } else { style.TextAlign.left }
 	}
 	if place_physical == .right || place_physical == .justify {
-		// A justified line fills its gap: the extras below add up to `free`, so the
+		// A justified line fills its gap: the extras below add up to `spare`, so the
 		// right edge minus the line minus the extras is the left edge, in both
 		// directions. An unjustified (single-space-less, last, or overflowing) line
 		// keeps `extra` at zero and lands flush right.
@@ -2771,7 +2807,7 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, 
 	} else if place_physical == .center {
 		// Unclamped on purpose: a line wider than its gap overflows both sides
 		// equally, which is what centring means when there is nowhere to put it.
-		pen = f64(gap.left) + free / 2.0
+		pen = f64(gap.left) + spare / 2.0
 	}
 	origin := pen
 	mut glyphs := []text.PositionedGlyph{}
@@ -3031,6 +3067,170 @@ fn transform_text(s string, t style.TextTransform) string {
 		sb.write_string(c.str())
 	}
 	return sb.str()
+}
+
+// DirClass is the bidirectional class of an atom, reduced to what line layout
+// needs: strong left-to-right, strong right-to-left, or neutral. This is not the
+// Unicode bidirectional algorithm -- no explicit embeddings, no weak types, no
+// bracket pairs -- it is the paragraph-direction reorder that makes a Persian
+// sentence with English words in it read correctly, and it is documented as that
+// rather than named after the algorithm it is not.
+enum DirClass {
+	ltr
+	rtl
+	neutral
+}
+
+// atom_dir classifies one atom by its first strong character. Spaces, tabs,
+// newlines, punctuation and symbols are neutral: they take their neighbours'
+// direction when resolved. ASCII letters and digits are strongly LTR -- digits
+// have no RTL form -- so "abc 123" stays one left-to-right run and "1 و 2"
+// mirrors to "2 و 1" the way a Persian reader expects. An atomic box is opaque
+// to direction the way it is opaque to breaking: its inside lays out on its own,
+// and outside it resolves like a space.
+fn atom_dir(a Atom) DirClass {
+	if a.is_box {
+		return .neutral
+	}
+	for c in a.content.runes() {
+		d := rune_dir_class(c)
+		if d != .neutral {
+			return d
+		}
+	}
+	return .neutral
+}
+
+// rune_dir_class puts one character in its class. Hebrew, Arabic and their
+// relatives (Syriac, Thaana, NKo and the presentation blocks) read right to
+// left; Latin, Greek, Cyrillic, Armenian, Georgian and the CJK blocks read left
+// to right. Everything else -- other scripts, currency, math, punctuation -- is
+// neutral and takes the paragraph's direction, which is wrong only for text that
+// mixes those scripts against the paragraph, and right everywhere else.
+fn rune_dir_class(c rune) DirClass {
+	if c == ` ` || c == `\t` || c == `\n` || c == `\r` {
+		return .neutral
+	}
+	if (c >= `a` && c <= `z`) || (c >= `A` && c <= `Z`) || (c >= `0` && c <= `9`) {
+		return .ltr
+	}
+	// Remaining ASCII is punctuation, symbols and controls: no direction.
+	if int(c) < 0x80 {
+		return .neutral
+	}
+	x := int(c)
+	if (x >= 0x0590 && x <= 0x05FF) || (x >= 0x0600 && x <= 0x06FF)
+		|| (x >= 0x0700 && x <= 0x074F) || (x >= 0x0750 && x <= 0x077F)
+		|| (x >= 0x0780 && x <= 0x07BF) || (x >= 0x07C0 && x <= 0x07FF)
+		|| (x >= 0x0800 && x <= 0x08FF) || (x >= 0xFB1D && x <= 0xFB4F)
+		|| (x >= 0xFB50 && x <= 0xFDFF) || (x >= 0xFE70 && x <= 0xFEFF) {
+		return .rtl
+	}
+	if (x >= 0x00C0 && x <= 0x02FF) || (x >= 0x0370 && x <= 0x03FF)
+		|| (x >= 0x0400 && x <= 0x04FF) || (x >= 0x0530 && x <= 0x058F)
+		|| (x >= 0x10A0 && x <= 0x10FF) || x >= 0x3040 {
+		return .ltr
+	}
+	return .neutral
+}
+
+// resolve_neutrals gives every neutral atom its neighbours' direction when they
+// agree, the paragraph's when they do not: a space between two Persian words is
+// Persian, and one between Persian and English goes with the paragraph. Line
+// edges count as the paragraph -- though the breaker never starts a line with a
+// space and the shaper never sees a trailing one, so the edges below are a
+// guard, not a case.
+fn resolve_neutrals(mut classes []DirClass, rtl bool) {
+	base := if rtl { DirClass.rtl } else { DirClass.ltr }
+	mut i := 0
+	for i < classes.len {
+		if classes[i] != .neutral {
+			i++
+			continue
+		}
+		mut j := i
+		for j < classes.len && classes[j] == .neutral {
+			j++
+		}
+		before := if i > 0 { classes[i - 1] } else { base }
+		after := if j < classes.len { classes[j] } else { base }
+		fill := if before == after { before } else { base }
+		for k in i .. j {
+			classes[k] = fill
+		}
+		i = j
+	}
+}
+
+// order_visual reorders a line's atoms from logical to visual order. Maximal runs
+// of one resolved class are the units: for a right-to-left paragraph their order
+// reverses, and a left-to-right run keeps its place in the sequence, which is what
+// keeps "abc 123" reading left to right inside a Persian sentence.
+//
+// Atoms inside a run never move. Each visual segment is shaped in one call, and
+// the shaper lays a segment's words in the order given -- per-run visual, runs in
+// the order handed over -- so reversing words inside a run would hand them over
+// backwards and they would come back double-reversed. A pure line is one maximal
+// run, so it passes through untouched and shapes exactly as it always has.
+//
+// A neutral-origin atom joins its neighbours only when the whole neutral group
+// is flanked by the class it resolved to ("abc 123" stays one run); between two
+// directions it stands alone as a separator, so the space in "شماره 123" stays
+// between the number and the word instead of travelling with one of them and
+// being stripped off the visual edge. Units are the run ids the join below
+// reads: same run and same unit shape together, and a separator never shares its
+// neighbours' unit even when it shares their run and class.
+fn order_visual(atoms []Atom, classes []DirClass, was_neutral []bool, rtl bool) ([]Atom, []DirClass, []int) {
+	base := if rtl { DirClass.rtl } else { DirClass.ltr }
+	// merged[i] is set for a neutral-origin atom whose whole group is flanked by
+	// the class it resolved to. Groups are maximal by construction, so the flanks
+	// are strong atoms or the line's edges (which count as the paragraph).
+	mut merged := []bool{cap: atoms.len}
+	for a in atoms {
+		merged << false
+	}
+	mut i := 0
+	for i < atoms.len {
+		if !was_neutral[i] {
+			i++
+			continue
+		}
+		mut j := i
+		for j < atoms.len && was_neutral[j] {
+			j++
+		}
+		prev := if i > 0 { classes[i - 1] } else { base }
+		next := if j < atoms.len { classes[j] } else { base }
+		if prev == classes[i] && next == classes[i] {
+			for k in i .. j {
+				merged[k] = true
+			}
+		}
+		i = j
+	}
+	mut bounds := []int{}
+	bounds << 0
+	for k in 1 .. atoms.len {
+		if classes[k] != classes[k - 1] || (was_neutral[k] && !merged[k])
+			|| (was_neutral[k - 1] && !merged[k - 1]) {
+			bounds << k
+		}
+	}
+	bounds << atoms.len
+	mut out_a := []Atom{cap: atoms.len}
+	mut out_c := []DirClass{cap: classes.len}
+	mut out_u := []int{cap: atoms.len}
+	mut r := 0
+	for r < bounds.len - 1 {
+		ri := if rtl { bounds.len - 2 - r } else { r }
+		for k in bounds[ri] .. bounds[ri + 1] {
+			out_a << atoms[k]
+			out_c << classes[k]
+			out_u << ri
+		}
+		r++
+	}
+	return out_a, out_c, out_u
 }
 
 fn tokenize_inline(content string, ws style.WhiteSpace) []string {
