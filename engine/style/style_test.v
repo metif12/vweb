@@ -338,7 +338,6 @@ fn sample_value(name string) string {
 		'direction' { 'rtl' }
 		'list-style-type' { 'square' }
 		'list-style-position' { 'inside' }
-		'vertical-align' { 'middle' }
 		'text-transform' { 'uppercase' }
 		'visibility' { 'hidden' }
 		else { panic(name + ' is in the inheritance table but has no sample value') }
@@ -352,6 +351,16 @@ fn test_display_is_not_inherited() {
 	child := el('span', '', '')
 	s := style_of(e, child, parent, default_context())
 	assert s.display == .inline
+}
+
+fn test_vertical_align_is_not_inherited() {
+	// CSS 2.1 10.8: "Inherited: no". A `super` on the parent shifts the parent's own
+	// box; the child's stays on the baseline. Inheriting it would lift every span in
+	// the subtree, which is a page of raised text from one declaration.
+	mut parent := initial()
+	parent.vertical_align = .super
+	s := style_of(author_engine(''), el('span', '', ''), parent, default_context())
+	assert s.vertical_align == .baseline
 }
 
 // --- float and clear ---------------------------------------------------------

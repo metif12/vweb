@@ -2020,3 +2020,39 @@ and to stay in its message loop, but what it *shows* was not verified here -- th
 no display to look at. The blit itself (premultiplied RGBA to straight BGRA, with
 transparent pixels written as the page background) is reviewed but untested; a machine
 with a screen should look at it once.
+
+---
+
+## 2026-10-13 - text-align, text-transform, and sub/super vertical-align
+
+**Status:** implemented on `main`, 18/18 test files green, visually verified with
+`cmd/vweb` renders (left/center/right/justified paragraph; H2O with a lowered 2
+and x2+y2 raised; an uppercase and a capitalized paragraph).
+
+**text-align** is placed in `shape_line`, where the pen already lived. `start`
+resolves to the old anchor, so the default LTR/RTL paths are bit-identical to
+before; `left`/`right` are physical and override direction. Trailing collapsible
+spaces are stripped before alignment (not in `pre`), and `justify` shares the
+leftover space between the line's own spaces on every line but the last, which
+falls back to `start` -- including the single-word and overflow cases, which was
+a real bug caught by the new test (the last line was anchoring right).
+
+**text-transform** runs per run before tokenizing, so measuring, breaking and
+shaping see the same string. The tests assert glyph identity, not width: `abc`
+under `uppercase` draws exactly the glyphs of a literal `ABC`. Case mapping is
+ASCII-only (right for Latin, a correct no-op for Persian, wrong for Greek and
+Cyrillic) -- recorded in the code, not hidden.
+
+**vertical-align: sub/super** shifts the run's baseline (up a third of an em,
+down a quarter -- a UA choice the spec leaves open) and grows the line to hold
+it, for text runs and atomic boxes alike. Two fixes came with it: `vertical-align`
+was inherited (`Inherited: no` per CSS -- it used to lift whole subtrees), and it
+applied to a block's own direct text (CSS 10.8: inline-level only). `top`,
+`bottom`, `text-top`, `text-bottom` and `middle` stay `baseline`: they need the
+finished line box or the x-height, and the font bridge exposes no x-height.
+
+**Process note:** the first visual check of this work showed none of it applied,
+and the cause was a stale binary -- `vweb.exe` had been built before the edits
+while `v test` always compiles fresh. Rebuilt, re-rendered, all three features
+present. The binary's build date is now something to check before trusting a
+render.

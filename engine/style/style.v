@@ -407,9 +407,12 @@ pub fn (mut s Style) inherit_from(parent &Style) {
 	s.direction = parent.direction
 	s.list_style_type = parent.list_style_type
 	s.list_style_position = parent.list_style_position
-	s.vertical_align = parent.vertical_align
 	s.text_transform = parent.text_transform
 	s.visibility = parent.visibility
+	// `vertical-align` is deliberately not here. CSS gives it "Inherited: no", and
+	// the alternative lifts a whole subtree: a `super` on a parent would shift every
+	// `span` inside it, where the spec shifts only the box the declaration is on.
+	// (text-transform *is* inherited -- "Inherited: yes" -- so it stays above.)
 	// `border-radius` and `overflow` are deliberately not here. CSS gives both
 	// "Inherited: no", and the box-model half of it matters: a rounded, clipping
 	// parent would make every block inside it rounded and clipping too, which is
@@ -424,7 +427,7 @@ pub fn (mut s Style) inherit_from(parent &Style) {
 pub fn inherited_properties() []string {
 	return ['color', 'font-size', 'font-family', 'font-weight', 'font-style', 'line-height',
 		'text-align', 'text-decoration', 'white-space', 'direction', 'list-style-type',
-		'list-style-position', 'vertical-align', 'text-transform', 'visibility']
+		'list-style-position', 'text-transform', 'visibility']
 }
 
 // BoxSizing decides what `width` and `height` measure.

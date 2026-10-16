@@ -259,10 +259,18 @@ fn (mut l Layouter) build(el &html.Tag, s style.Style, ctx &style.Context) &Box 
 			// Whitespace is kept rather than dropped. Dropping a whitespace-only node
 			// between two inline elements glues them together: `<b>a</b> <i>b</i>` would
 			// become "ab". Collapsing happens once, in `inline_box`.
+			// The run is the block's own text, not an inline-level box, and
+			// `vertical-align` does not apply to it (CSS 2.1 10.8): a `super` on the
+			// block must not lift its own text, or every `vertical-align` on a `div`
+			// -- which browsers ignore -- would move a page. An inline element's
+			// text keeps its own below. (`text-transform` is inherited, so it is
+			// unaffected by clearing this one field.)
+			mut ts := s
+			ts.vertical_align = .baseline
 			pending << InlineItem{
 				is_box:    false
 				text:      child.content
-				style:     s
+				style:     ts
 				font_size: child_ctx.font_size
 			}
 			continue
@@ -2437,7 +2445,12 @@ struct Segment {
 	text   string
 	style  text.FontStyle
 	width  f64
-	box    &Box = unsafe { nil }
+	// shift is the segment's baseline offset from the line's, positive up: the
+	// `vertical-align: sub|super` of the run or box it was built from. Shaping and
+	// placement both read it, so a raised run draws raised and the line still grows
+	// to hold it.
+	shift f64
+	box   &Box = unsafe { nil }
 }
 
 // layout_runs breaks a box's inline content into lines and shapes each one where it will
@@ -2482,7 +2495,11 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 			continue
 		}
 		run_style := font_style_of(item.style, item.font_size, ctx)
-		for tok in tokenize_inline(item.text, b.style.white_space) {
+		// The transform runs before the tokenizer, so measuring, breaking and
+		// shaping all see the same string: `capitalize` works on words, and the
+		// words only exist after this split either way.
+		run_text := transform_text(item.text, item.style.text_transform)
+		for tok in tokenize_inline(run_text, b.style.white_space) {
 			atoms << Atom{
 				run:     ri
 				content: tok
@@ -2544,7 +2561,7 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 		// A space never starts a line and never causes one, so the break is taken before
 		// the word that would not fit rather than after the space before it.
 		if !a.space && cur.len > 0 && w + a.width > wrap_width(b.style.white_space, gap.span()) {
-			line, next_top := l.shape_line(mut b, ctx, cur, gap, line_top, rtl)
+			line, next_top := l.shape_line(mut b, ctx, cur, gap, line_top, rtl, false)
 			out << line
 			line_top = next_top
 			gap = line_gap(floats, line_top, own_line, content_x, content_width)
@@ -2555,10 +2572,32 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 		w += a.width
 	}
 	if cur.len > 0 {
-		line, _ := l.shape_line(mut b, ctx, cur, gap, line_top, rtl)
+		line, _ := l.shape_line(mut b, ctx, cur, gap, line_top, rtl, true)
 		out << line
 	}
 	return out
+}
+
+// valign_shift is the baseline offset for `vertical-align: sub|super`, positive up.
+//
+// CSS gives the direction and leaves the amount to the UA: `super` rises a third of
+// an em, `sub` sinks a quarter, so at 16px super sits 5px up and sub 4px down --
+// inside the range browsers use, and the exact number is a UA choice the spec
+// blesses rather than a measurement to defend.
+//
+// `top | bottom` need the finished line box, `text-top | text-bottom` the parent's
+// font box, and `middle` the x-height, none of which this layer can see at the
+// point it places a line (and the bridge does not expose an x-height at all). They
+// stay `baseline`, which is today's behaviour, and the limit is recorded in
+// PHASES.md rather than hidden behind an accepted keyword.
+fn valign_shift(va style.VerticalAlign, font_size f64) f64 {
+	if va == .super {
+		return font_size * 0.33
+	}
+	if va == .sub {
+		return -font_size * 0.25
+	}
+	return 0.0
 }
 
 // shape_line shapes the atoms of one line, and returns the line together with the y the
@@ -2569,8 +2608,26 @@ fn (mut l Layouter) layout_runs(mut b &Box, ctx &style.Context, content_x int, c
 // both directions, and a right-to-left line is anchored at its right edge, which is what
 // makes the shortening mirror: a Persian line beside a left float starts at that float's
 // left edge rather than at the block's.
-fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, line_atoms []Atom, gap LineGap,
-	y int, rtl bool) (LaidLine, int) {
+fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, atoms_in []Atom, gap LineGap,
+	y int, rtl bool, is_last bool) (LaidLine, int) {
+	// A trailing space never survives to alignment: CSS removes a collapsible space at
+	// the end of a line before placing it, so a centred line is centred on its ink and
+	// not on its ink plus whatever the breaker happened to leave. Only where spaces
+	// collapse -- `pre` and `pre-wrap` keep every space, and keep the honest width the
+	// tokenizer's comment asks for. A line never starts with a space (the break loop
+	// refuses that), so stripping the end cannot empty it; the shape below still
+	// tolerates an empty line, for a caller that does not come through the loop.
+	ws := b.style.white_space
+	mut atoms := atoms_in
+	if ws == .normal || ws == .nowrap || ws == .pre_line {
+		for atoms.len > 0 {
+			last := atoms[atoms.len - 1]
+			if last.is_box || !last.space || last.content != ' ' {
+				break
+			}
+			atoms = atoms[..atoms.len - 1]
+		}
+	}
 	// Half-leading, CSS 2.1 10.8.1: each item's leading is split half above and half below
 	// its own text, so a line box is as tall as the tallest item on it plus that item's
 	// half-leading.
@@ -2578,19 +2635,22 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, line_atoms []Atom
 	// what keeps a 28px run on the second line from inflating the first.
 	mut above := 0.0
 	mut below := 0.0
-	for a in line_atoms {
+	for a in atoms {
 		if a.is_box {
-			// An atomic box sits on the baseline: its bottom margin edge is the line's
-			// baseline, which is `vertical-align: baseline` for inline-block. So its
-			// whole height is above the baseline and none of it below.
-			above = fmax(above, f64(a.box.rect.height))
+			// An atomic box sits on the baseline shifted by its own
+			// `vertical-align`: `baseline` puts its bottom margin edge on the
+			// line's baseline, `super` lifts the whole box, `sub` sinks it.
+			shift := valign_shift(a.box.style.vertical_align, a.box.font_size)
+			above = fmax(above, f64(a.box.rect.height) + shift)
+			below = fmax(below, -shift)
 			continue
 		}
 		rs := font_style_of(b.runs[a.run].style, b.runs[a.run].font_size, ctx)
 		m := l.fonts.line_metrics(&rs)
 		half := (m.line_height - (m.ascent + m.descent)) / 2.0
-		above = fmax(above, m.ascent + half)
-		below = fmax(below, m.descent + half)
+		shift := valign_shift(b.runs[a.run].style.vertical_align, b.runs[a.run].font_size)
+		above = fmax(above, m.ascent + half + shift)
+		below = fmax(below, m.descent + half - shift)
 	}
 	line_height := px(above + below)
 	baseline := f64(y) + above
@@ -2601,23 +2661,24 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, line_atoms []Atom
 	// down: its pen starts at the right edge, not the left.
 	mut segs := []Segment{}
 	mut i := 0
-	for i < line_atoms.len {
-		if line_atoms[i].is_box {
+	for i < atoms.len {
+		if atoms[i].is_box {
 			segs << Segment{
 				is_box: true
-				width:  line_atoms[i].width
-				box:    line_atoms[i].box
+				width:  atoms[i].width
+				shift:  valign_shift(atoms[i].box.style.vertical_align, atoms[i].box.font_size)
+				box:    atoms[i].box
 			}
 			i++
 			continue
 		}
 		mut j := i
 		mut sb := strings.new_builder(32)
-		for j < line_atoms.len && line_atoms[j].run == line_atoms[i].run {
-			sb.write_string(line_atoms[j].content)
+		for j < atoms.len && atoms[j].run == atoms[i].run {
+			sb.write_string(atoms[j].content)
 			j++
 		}
-		r := b.runs[line_atoms[i].run]
+		r := b.runs[atoms[i].run]
 		run_style := font_style_of(r.style, r.font_size, ctx)
 		// Read once: `Builder.str()` clears the builder, so a second call on the
 		// same one answers with the empty string and the segment would be shaped as
@@ -2625,7 +2686,7 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, line_atoms []Atom
 		seg_str := sb.str()
 		mut seg_w := 0.0
 		for k in i .. j {
-			seg_w += line_atoms[k].width
+			seg_w += atoms[k].width
 		}
 		if rtl {
 			// The atoms' widths are each word measured on its own, and Arabic joining
@@ -2643,22 +2704,74 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, line_atoms []Atom
 			text:  seg_str
 			style: run_style
 			width: seg_w
+			shift: valign_shift(r.style.vertical_align, r.font_size)
 		}
 		i = j
 	}
-	// The pen. Left to right it starts at the left edge of the gap and walks right,
-	// which is what it has always done. Right to left it starts one line width in from
-	// the gap's right edge and the same segments are then walked left to right from
-	// there, so the first thing written is the rightmost thing drawn, a line shorter
-	// than its gap sits flush against that edge, and an atomic box is placed by the
-	// same pen.
-	mut pen := f64(gap.left)
-	if rtl {
-		mut total := 0.0
-		for s in segs {
-			total += s.width
+	// The pen. `text-align` decides where it starts, and the direction only
+	// matters through `start` and `end`: `left` and `right` are physical and ignore
+	// it, so an RTL box with `text-align: left` is flush left, where the old code --
+	// which anchored every RTL line to the right edge -- would have kept it right.
+	// `start` resolves to the same anchor the old code always used, so the default
+	// path below is bit-identical to what was here before: left edge for LTR,
+	// right edge minus the line for RTL.
+	mut physical := b.style.text_align
+	if physical == .start {
+		physical = if rtl { style.TextAlign.right } else { style.TextAlign.left }
+	} else if physical == .end {
+		physical = if rtl { style.TextAlign.left } else { style.TextAlign.right }
+	}
+	mut total := 0.0
+	for s in segs {
+		total += s.width
+	}
+	free := f64(gap.right - gap.left) - total
+	// Justification shares the leftover space between the line's own spaces, on every
+	// line but the last -- CSS gives the last line the block's start alignment -- and
+	// only when there is both a space to share it between and space left to share. A
+	// one-word line, or a word that overflowed its gap, falls back to `start`. `pre`
+	// and `pre-wrap` keep every space including the trailing ones, so their widths
+	// are already honest and justification would double-count them; it stays off.
+	mut extra := 0.0
+	if physical == .justify && !is_last && (ws == .normal || ws == .pre_line) {
+		mut n := 0
+		for a in atoms {
+			// The content check, not just the flag: a `pre-line` newline is a space
+			// atom too, but it takes no extra below (only `' '` runes do), so
+			// counting it here would share the space with a gap that never grows
+			// and the line would stop short of its edge.
+			if a.space && !a.is_box && a.content == ' ' {
+				n++
+			}
 		}
-		pen = f64(gap.right) - total
+		if n > 0 && free > 0.0 {
+			extra = free / f64(n)
+		}
+	}
+	mut pen := f64(gap.left)
+	// `extra == 0.0` on a `justify` line means it was not justified after all: the
+	// last line, a line with no spaces, or one that overflowed. CSS gives those the
+	// block's start alignment, so they are placed as `start`, not flush right.
+	mut place_physical := physical
+	if physical == .justify && extra == 0.0 {
+		place_physical = if rtl { style.TextAlign.right } else { style.TextAlign.left }
+	}
+	if place_physical == .right || place_physical == .justify {
+		// A justified line fills its gap: the extras below add up to `free`, so the
+		// right edge minus the line minus the extras is the left edge, in both
+		// directions. An unjustified (single-space-less, last, or overflowing) line
+		// keeps `extra` at zero and lands flush right.
+		mut extras := 0.0
+		for a in atoms {
+			if a.space && !a.is_box && a.content == ' ' {
+				extras += extra
+			}
+		}
+		pen = f64(gap.right) - total - extras
+	} else if place_physical == .center {
+		// Unclamped on purpose: a line wider than its gap overflows both sides
+		// equally, which is what centring means when there is nowhere to put it.
+		pen = f64(gap.left) + free / 2.0
 	}
 	origin := pen
 	mut glyphs := []text.PositionedGlyph{}
@@ -2666,13 +2779,20 @@ fn (mut l Layouter) shape_line(mut b &Box, ctx &style.Context, line_atoms []Atom
 		if s.is_box {
 			mut bx := s.box
 			bx.rect.x = int(pen)
-			bx.rect.y = int(baseline) - bx.rect.height
+			bx.rect.y = int(baseline - s.shift) - bx.rect.height
 			pen += s.width
 			continue
 		}
 		st := s.style
-		glyphs << l.fonts.shape(s.text, &st, pen, baseline)
+		glyphs << l.fonts.shape(s.text, &st, pen, baseline - s.shift)
 		pen += s.width
+		if extra != 0.0 {
+			for c in s.text.runes() {
+				if c == ` ` {
+					pen += extra
+				}
+			}
+		}
 	}
 	return LaidLine{
 		glyphs: glyphs
@@ -2871,6 +2991,48 @@ fn fmax(a f64, b f64) f64 {
 // `layout_runs` skips leading spaces anyway -- it is dropped here so that a box's first
 // token is a word and the arithmetic downstream never sees a space it has to special-case.
 // A trailing space *is* kept, so that a line ending in one is measured honestly.
+// transform_text applies `text-transform` to a run's text before it is tokenized,
+// measured and shaped, so the three agree on the same string. It runs per run, not
+// per box, because the property is set per element: a `<b style="text-transform:
+// uppercase">` inside a plain paragraph uppercases only its own words.
+//
+// Case mapping is ASCII-only: `to_upper` and `to_lower` move a-z and leave every
+// other byte alone. That is exactly right for Latin, and a no-op (which is also
+// right) for scripts without case like Persian. It is wrong for cased non-Latin
+// scripts -- Greek, Cyrillic -- whose letters it leaves lowercase, and that is the
+// recorded limit, not an oversight: a real caser needs Unicode tables this engine
+// does not carry.
+fn transform_text(s string, t style.TextTransform) string {
+	if t == .none || s == '' {
+		return s
+	}
+	if t == .uppercase {
+		return s.to_upper()
+	}
+	if t == .lowercase {
+		return s.to_lower()
+	}
+	// `capitalize` uppercases the first letter of each word and touches nothing
+	// else -- CSS does not lowercase the rest. A word starts the string or follows
+	// whitespace; an apostrophe does not start one ("don't" -> "Don't").
+	mut sb := strings.new_builder(s.len)
+	mut word_start := true
+	for c in s.runes() {
+		if c == ` ` || c == `\t` || c == `\n` || c == `\r` {
+			sb.write_string(c.str())
+			word_start = true
+			continue
+		}
+		if word_start {
+			sb.write_string(c.str().to_upper())
+			word_start = false
+			continue
+		}
+		sb.write_string(c.str())
+	}
+	return sb.str()
+}
+
 fn tokenize_inline(content string, ws style.WhiteSpace) []string {
 	pre := ws == .pre || ws == .pre_wrap || ws == .pre_line
 	mut out := []string{}

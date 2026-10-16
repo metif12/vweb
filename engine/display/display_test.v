@@ -1560,6 +1560,134 @@ fn test_a_rtl_line_reports_its_true_width() {
 	assert math.abs(min_x_of(b.glyphs) + lines[0].width - f64(b.content.x + b.content.width)) < 0.001
 }
 
+fn test_text_align_center_places_a_short_line_mid_gap() {
+	// The pen starts half the leftover space in from the left edge, so the ink sits
+	// in the middle of the gap rather than against either side.
+	mut b := plain_box('div { text-align: center }', 800, 'abc def', true)
+	lines := laid_lines(mut b)
+	assert lines.len == 1
+	mid := f64(b.content.x) + f64(b.content.width) / 2.0
+	assert math.abs(min_x_of(b.glyphs) + lines[0].width / 2.0 - mid) < 0.001
+}
+
+fn test_text_align_right_flushes_an_ltr_line_to_the_right_edge() {
+	// Physical, not directional: an LTR line asked for `right` ends at the right
+	// edge exactly the way an RTL line does by default.
+	mut b := plain_box('div { text-align: right }', 800, 'abc def', true)
+	lines := laid_lines(mut b)
+	assert lines.len == 1
+	right := f64(b.content.x + b.content.width)
+	assert math.abs(min_x_of(b.glyphs) + lines[0].width - right) < 0.001
+}
+
+fn test_text_align_left_overrides_an_rtl_box_to_flush_left() {
+	// `left` ignores direction where `start` follows it: the same RTL box that is
+	// flush right by default puts its ink against the left edge when asked.
+	mut b := plain_box('div { ' + rtl_font + 'direction: rtl; text-align: left }', 800, rtl_words, true)
+	lines := laid_lines(mut b)
+	assert lines.len == 1
+	assert math.abs(min_x_of(b.glyphs) - f64(b.content.x)) < 0.01
+}
+
+fn test_text_align_start_and_end_follow_direction() {
+	// `start` is the default both tests above assume: right for RTL, left for LTR.
+	// `end` is its mirror, so `end` on an RTL box is flush left and on an LTR box
+	// flush right.
+	mut rtl := plain_box('div { ' + rtl_font + 'direction: rtl; text-align: end }', 800, rtl_words, true)
+	assert math.abs(min_x_of(rtl.glyphs) - f64(rtl.content.x)) < 0.01
+	mut ltr := plain_box('div { text-align: end }', 800, 'abc def', true)
+	lines := laid_lines(mut ltr)
+	assert lines.len == 1
+	right := f64(ltr.content.x + ltr.content.width)
+	assert math.abs(min_x_of(ltr.glyphs) + lines[0].width - right) < 0.001
+}
+
+fn test_text_align_justify_fills_every_line_but_the_last() {
+	// Every line but the last shares its leftover space between its words, so each
+	// of them is exactly as wide as the gap; the last line keeps the block's start
+	// alignment and stays short.
+	mut b := plain_box('div { text-align: justify; width: 110px }', 800, 'aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk', true)
+	assert b.line_count >= 3
+	lines := laid_lines(mut b)
+	assert lines.len == b.line_count
+	for i in 0 .. lines.len - 1 {
+		assert math.abs(lines[i].width - f64(b.content.width)) < 0.01
+	}
+	// The last line starts at the left edge: same split-by-baseline as the two-line
+	// RTL test, because `place` keeps one flat glyph list.
+	mut at := 0
+	for _ in 0 .. lines.len - 1 {
+		mut to := at
+		for to < b.glyphs.len && math.abs(b.glyphs[to].y - b.glyphs[at].y) < 1.0 {
+			to++
+		}
+		at = to
+	}
+	assert at < b.glyphs.len
+	assert math.abs(b.glyphs[at].x - f64(b.content.x)) < 0.01
+}
+
+fn gids_of(b &Box) []int {
+	mut out := []int{}
+	for g in b.glyphs {
+		out << g.gid
+	}
+	return out
+}
+
+fn test_text_transform_uppercase_shapes_the_uppercase_text() {
+	// The run is measured, broken and shaped as its transformed self: `abc` under
+	// `uppercase` draws exactly the glyphs a literal `ABC` draws, and not the ones
+	// the source text would have drawn. Glyph identity, not width, is the assertion
+	// -- two different strings can be equally wide.
+	upper := plain_box('div { text-transform: uppercase }', 800, 'abc', true)
+	plain_upper := plain_box('', 800, 'ABC', true)
+	plain_lower := plain_box('', 800, 'abc', true)
+	assert gids_of(upper) == gids_of(plain_upper)
+	assert gids_of(upper) != gids_of(plain_lower)
+}
+
+fn test_text_transform_lowercase_and_capitalize() {
+	lower := plain_box('div { text-transform: lowercase }', 800, 'ABC', true)
+	assert gids_of(lower) == gids_of(plain_box('', 800, 'abc', true))
+	// `capitalize` touches the first letter of each word and nothing else: the rest
+	// keeps its case, so this is not `uppercase` wearing a hat.
+	cap := plain_box('div { text-transform: capitalize }', 800, 'aaa bBB', true)
+	assert gids_of(cap) == gids_of(plain_box('', 800, 'Aaa BBB', true))
+}
+
+fn test_vertical_align_super_raises_its_run() {
+	// Glyph order is placement order, so the first glyph belongs to `base` and the
+	// last to the `super` span after it: the span's ink sits higher (smaller y) than
+	// the baseline text, and the line grew to hold the raised run.
+	mixed := span_box('span { vertical-align: super }', 800, 'base', 'X', true)
+	plain := span_box('', 800, 'base', 'X', true)
+	assert mixed.glyphs[0].y - mixed.glyphs.last().y > 1.0
+	assert mixed.content.height > plain.content.height
+}
+
+fn test_vertical_align_sub_lowers_its_run() {
+	// The mirror: a `sub` span's ink sits lower (larger y) than the baseline text,
+	// and the line grew downward to hold it.
+	mixed := span_box('span { vertical-align: sub }', 800, 'base', 'X', true)
+	plain := span_box('', 800, 'base', 'X', true)
+	assert mixed.glyphs.last().y - mixed.glyphs[0].y > 1.0
+	assert mixed.content.height > plain.content.height
+}
+
+fn test_vertical_align_on_a_block_does_not_lift_its_text() {
+	// `vertical-align` applies to inline-level boxes (CSS 2.1 10.8): on a block it
+	// is ignored, so the block's own text stays on the baseline and the line keeps
+	// the height it would have had without the declaration.
+	raised := plain_box('div { vertical-align: super }', 800, 'abc', true)
+	plain := plain_box('', 800, 'abc', true)
+	assert gids_of(raised) == gids_of(plain)
+	for i in 0 .. raised.glyphs.len {
+		assert raised.glyphs[i].y == plain.glyphs[i].y
+	}
+	assert raised.content.height == plain.content.height
+}
+
 fn atomic_line(sheet string) &Box {
 	mut body := el('body', '', '')
 	mut div := el('div', 'd', '')
