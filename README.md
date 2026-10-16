@@ -146,3 +146,23 @@ v run cmd/vweb page.html out.png --width 640
 `tools/boxes.v` مهم‌ترین ابزار این پروژه است: «صفحه بد به نظر می‌رسد» تشخیص نیست.
 هر باگ رندر با «چه جعبه‌هایی ساخته شد» شروع می‌شود، و نوشتن یک برنامهٔ موقت برای
 همین یک پرسش، شش نسخهٔ تقریباً یکسان در یک جلسه ساخت.
+
+## Browser
+
+`shell/browser` is the sample browser: it loads the address it is given and shows the
+page in a window. It needs a display; where there is none, `--shot` renders the same
+page headlessly.
+
+```sh
+v -cc tcc -Wimpure-v -o browser.exe shell/browser/main.v
+browser page.html --width 1024 --height 768
+browser https://example.com --shot out.png --width 800 --height 600
+```
+
+The wheel and the arrows, PgUp/PgDn, Home and End scroll; Escape or `q` quits. What it
+is not: tabs, navigation, an address bar, HiDPI, or a reflow on resize — resizing shows
+more or less of the same render. Pages taller than 9000px are cut. The window cannot be
+built with `gg`: the engine links vtext, and vtext's C rasteriser and gg's fontstash
+both compile `stb_truetype` into the single translation unit V generates, so the two
+cannot live in one binary. This browser therefore draws with GDI directly — a DIB
+section filled from the engine's own canvas — and adds no third-party C at all.

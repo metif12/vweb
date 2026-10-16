@@ -1983,3 +1983,40 @@ each and the content fitted to them.
 **Control:** with the fixed branch disabled the two new tests go red -- `one.rect.width`
 came out 139 (content-sized) where 50 was declared, and the second column's x moved with
 it.
+
+---
+
+## 2026-10-13 - A sample browser in `shell/browser`, and what its link error taught
+
+**Status:** implemented on `main`. `shell/browser/main.v` builds to a Windows GUI program
+that loads the address it is given (a path or an http(s) URL) and shows the rendered page
+in a window, with wheel/keyboard scrolling. `--shot` renders the same page headlessly to
+a PNG. All 18 test files still green; the three existing consumers compile; `--shot`
+output was read and matches `cmd/vweb`'s pixel for pixel for the same page.
+
+**Why GDI and not gg.** Linking `gg` fails: vtext's C rasteriser and gg's fontstash both
+compile `stb_truetype` into the single translation unit V generates, so the engine and a
+gg window cannot live in one binary. GDI needs no third-party C at all -- a DIB section
+filled from the engine's own canvas, shown with one blit. That decision, and the window
+being Windows-only, are recorded in the file and in the README rather than discovered
+from a linker error.
+
+**Two bugs, both found by failing to open a window rather than by reading.**
+
+1. `RegisterClassA` failed with access denied, and the cause was measured, not guessed:
+   `sizeof(WndClassA)` came out 80 where the C struct is 72. Probing smaller structs
+   showed every field 8 bytes apart, and `sizeof(int)` itself returned 8 -- in *this*
+   toolchain `int` is 64 bits. Every `int` shared with C is now an explicit `i32`, and
+   would have stayed wrong for every Win32 struct in the file, not just this one.
+2. The failure was invisible for a whole debugging session because this environment
+   swallows console output: `println` and `eprintln` never arrive, so an `exit(1)` with
+   a message looks identical to a silent crash. File markers (`os.write_file` at each
+   failure branch) are what located the failing call. On a machine with a console the
+   messages print normally.
+
+**What the window path does and does not prove.** `--shot` exercises load, layout and
+paint end to end and is verified by reading the PNG. The window was verified to open
+and to stay in its message loop, but what it *shows* was not verified here -- there is
+no display to look at. The blit itself (premultiplied RGBA to straight BGRA, with
+transparent pixels written as the page background) is reviewed but untested; a machine
+with a screen should look at it once.
